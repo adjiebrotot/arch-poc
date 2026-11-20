@@ -18,7 +18,14 @@ self.onmessage = async (ev: MessageEvent<{ buffer: ArrayBuffer; wasmUrl: string;
       onProgress: (p, message) => self.postMessage({ type: 'progress', p, message }),
     });
     const transfer: Transferable[] = [];
-    for (const e of model.elements) transfer.push(e.positions.buffer, e.normals.buffer, e.indices.buffer);
+    for (const e of model.elements) {
+      transfer.push(e.positions.buffer, e.normals.buffer, e.indices.buffer);
+      if (e.uvs) transfer.push(e.uvs.buffer);
+    }
+    for (const t of model.textures ?? []) {
+      if (t.data && !transfer.includes(t.data.buffer)) transfer.push(t.data.buffer);
+      if (t.rgba && !transfer.includes(t.rgba.buffer)) transfer.push(t.rgba.buffer);
+    }
     self.postMessage({ type: 'done', model }, { transfer });
   } catch (e) {
     self.postMessage({ type: 'error', message: e instanceof Error ? e.message : String(e) });

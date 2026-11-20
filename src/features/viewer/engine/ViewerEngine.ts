@@ -6,6 +6,7 @@ import {
 } from '@babylonjs/core';
 import { SkyMaterial } from '@babylonjs/materials/sky/skyMaterial';
 import type { ModelData, ModelElement } from '@shared/model/types';
+import { focusBBox } from '@shared/model/types';
 import type { CameraSnapshot, Comment } from '@shared/comments/model';
 import { CATEGORY_ICON } from '@shared/comments/model';
 import { MaterialLibrary } from './materials';
@@ -78,8 +79,12 @@ export class ViewerEngine {
   private storeyOrder: string[] = [];
   fps = 0;
 
+  /** building bounds (site/terrain excluded) used for framing */
+  focus: ModelData['bbox'];
+
   constructor(public canvas: HTMLCanvasElement, public model: ModelData, quality: Quality) {
     this.quality = quality;
+    this.focus = focusBBox(model);
     this.engine = new Engine(canvas, true, { preserveDrawingBuffer: false, stencil: true, antialias: false, powerPreference: 'high-performance' }, true);
     this.scene = new Scene(this.engine);
     this.scene.useRightHandedSystem = true;
@@ -142,6 +147,7 @@ export class ViewerEngine {
     const st = [...m.storeys].sort((a, b) => Math.abs(a.elevation) - Math.abs(b.elevation))[0];
     this.groundY = (st ? st.elevation : m.bbox.min[1]) - 0.03;
     const groups = new Map<string, Mesh[]>();
+    const texById = new Map((m.textures ?? []).map((t) => [t.id, t]));
     for (const e of m.elements) {
       this.elements.set(e.id, e);
       const mesh = new Mesh(`el-${e.id}`, s);
@@ -149,9 +155,10 @@ export class ViewerEngine {
       vd.positions = e.positions;
       vd.normals = e.normals;
       vd.indices = e.indices;
-      vd.uvs = boxUVs(e.positions, e.normals);
+      vd.uvs = e.uvs && e.uvs.length === (e.positions.length / 3) * 2 ? e.uvs : boxUVs(e.positions, e.normals);
       vd.applyToMesh(mesh, false);
-      mesh.material = this.mats.get(e.material, e.color);
+      const tex = e.texture ? texById.get(e.texture) : undefined;
+      mesh.material = tex ? this.mats.getTextured(tex, e.material, !!e.uvs, e.color) : this.mats.get(e.material, e.color);
       mesh.metadata = { elementId: e.id };
       mesh.isVisible = false; // rendering uses merged meshes below; this one is for picking/collisions
       mesh.checkCollisions = e.material !== 'glass' && !NO_COLLIDE.test(e.type);
@@ -191,17 +198,17 @@ export class ViewerEngine {
   }
 
   get center(): Vector3 {
-    const b = this.model.bbox;
+    const b = this.focus;
     return new Vector3((b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2);
   }
   get size(): number {
-    const b = this.model.bbox;
+    const b = this.focus;
     return Math.max(b.max[0] - b.min[0], b.max[2] - b.min[2], b.max[1] - b.min[1]);
   }
 
   private setupCameras() {
     const s = this.scene;
-    const b = this.model.bbox;
+    const b = this.focus;
     const c = this.center;
     // Walk camera starts outside, in front of the long side, looking at the building.
     const front = new Vector3(c.x, this.groundY + EYE, b.max[2] + Math.max(5, this.size * 0.28));
@@ -229,7 +236,7 @@ export class ViewerEngine {
 
     this.orbitCam = new ArcRotateCamera('orbit', -Math.PI / 3, 1.0, this.size * 1.6, c.clone(), s);
     this.orbitCam.lowerRadiusLimit = 2;
-    this.orbitCam.upperRadiusLimit = this.size * 5;
+    this.orbitCam.upperRadiusLimit = Math.max(this.size * 5, 60);
     this.orbitCam.upperBetaLimit = Math.PI / 2 - 0.02;
     this.orbitCam.wheelDeltaPercentage = 0.02;
     this.orbitCam.pinchDeltaPercentage = 0.004;
@@ -399,17 +406,22 @@ export class ViewerEngine {
 
   walkTo(p: Vector3) { this.walkTarget = p.clone(); }
 
-  /** Find a spot inside the building on the given (or lowest occupied) storey. */
-  goInside(storeyName?: string) {
-    const st = this.model.storeys.find((s) => s.name === storeyName) ?? [...this.model.storeys].sort((a, b) => Math.abs(a.elevation) - Math.abs(b.elevation))[0];
-    const y = (st?.elevation ?? 0) + 1.2;
-    const b = this.model.bbox, c = this.center;
+  /** Find a spot inside the building: the given storey, else storeys nearest ground level first. */
+  goInside(storeyName?: string): boolean {
+    const order = storeyName ? this.model.storeys.filter((s) => s.name === storeyName)
+      : [...this.model.storeys].sort((a, b) => Math.abs(a.elevation) - Math.abs(b.elevation));
+    return order.some((s) => this.goInsideStorey(s));
+  }
+
+  private goInsideStorey(st: ModelData['storeys'][number]): boolean {
+    const y = st.elevation + 1.2;
+    const b = this.focus, c = this.center;
     let best: Vector3 | null = null, bd = Infinity;
     const isCollider = (m: AbstractMesh) => m.checkCollisions && m.isEnabled() && !m.metadata?.ground;
     for (let i = 0; i <= 12; i++) for (let j = 0; j <= 12; j++) {
       const x = b.min[0] + ((b.max[0] - b.min[0]) * (i + 0.5)) / 13, z = b.min[2] + ((b.max[2] - b.min[2]) * (j + 0.5)) / 13;
       const down = this.scene.pickWithRay(new Ray(new Vector3(x, y, z), new Vector3(0, -1, 0), 2), isCollider);
-      if (!down?.hit || !down.pickedPoint || Math.abs(down.pickedPoint.y - (st?.elevation ?? 0)) > 0.4) continue;
+      if (!down?.hit || !down.pickedPoint || Math.abs(down.pickedPoint.y - st.elevation) > 0.6) continue;
       const up = this.scene.pickWithRay(new Ray(new Vector3(x, y, z), new Vector3(0, 1, 0), 4), isCollider);
       if (!up?.hit) continue; // must be under a ceiling
       let clear = true;
@@ -556,6 +568,7 @@ export class ViewerEngine {
 
   dispose() {
     window.removeEventListener('resize', this.onResize);
+    this.mats.dispose();
     this.engine.stopRenderLoop();
     this.scene.dispose();
     this.engine.dispose();

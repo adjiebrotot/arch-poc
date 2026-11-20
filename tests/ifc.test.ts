@@ -36,3 +36,12 @@ describe('IFC parsing (web-ifc, single thread)', async () => {
     expect(lite.elements.some((e) => e.type === 'IfcFurnishingElement')).toBe(false);
   });
 });
+
+describe('storey elevations', async () => {
+  const api = new IfcAPI();
+  await api.Init(undefined, true);
+  it('match the geometry for the bundled duplex', () => {
+    const m = parseIfc(api, new Uint8Array(fs.readFileSync('public/samples/duplex.ifc')));
+    expect(m.storeys.find((s) => s.name === 'Level 2')!.elevation).toBeCloseTo(3.1, 1);
+  });
+});

@@ -9,6 +9,7 @@
 
   let dragging = $state(false);
   let bigFile = $state<File | null>(null);
+  let extra: File[] = [];
   let projects = $state<PublishedProject[]>([]);
   let error = $state('');
 
@@ -19,22 +20,30 @@
     loadProject(projectParam, false).catch((e) => (error = e.message === 'not found' ? `We couldn't find the project “${projectParam}”.` : e.message));
   }
 
-  async function run(p: Promise<unknown>) {
+  async function run(p: Promise<{ missingTextures?: string[] } | unknown>) {
     error = '';
-    try { await p; toast('Model ready', 'success'); } catch (e) { error = e instanceof Error ? e.message : String(e); }
+    try {
+      const lm = (await p) as { missingTextures?: string[] } | undefined;
+      const miss = lm?.missingTextures ?? [];
+      if (miss.length) toast(`Model ready · ${miss.length} texture image${miss.length > 1 ? 's' : ''} not found (${miss.slice(0, 2).join(', ')}${miss.length > 2 ? '…' : ''}) — drop them together with the IFC`, 'info', 7000);
+      else toast('Model ready', 'success');
+    } catch (e) { error = e instanceof Error ? e.message : String(e); }
   }
 
-  function accept(file: File) {
-    if (!/\.(ifc|glb|gltf)$/i.test(file.name)) { error = 'Please choose an .ifc, .glb or .gltf file.'; return; }
+  /** Accepts the model plus any texture images it references (select or drop them together). */
+  function accept(files: File[]) {
+    const file = files.find((f) => /\.(ifc|glb|gltf)$/i.test(f.name));
+    if (!file) { error = 'Please choose an .ifc, .glb or .gltf file (you can add its texture images too).'; return; }
+    extra = files.filter((f) => f !== file && /\.(jpe?g|png|webp|gif|bmp)$/i.test(f.name));
     const mb = file.size / 1e6;
     if (mb > (isMobile() ? MOBILE_LIMIT_MB : DESKTOP_LIMIT_MB)) { bigFile = file; return; }
-    run(loadFile(file));
+    run(loadFile(file, false, extra));
   }
   function onDrop(e: DragEvent) {
     e.preventDefault(); dragging = false;
     if ($role !== 'architect') { toast('Switch to Architect (top right) to upload models', 'error'); return; }
-    const f = e.dataTransfer?.files?.[0];
-    if (f) accept(f);
+    const fs = [...(e.dataTransfer?.files ?? [])];
+    if (fs.length) accept(fs);
   }
   const count = $derived($current ? $comments.filter((c) => c.projectId === $current!.projectId).length : 0);
 </script>
@@ -58,6 +67,8 @@
           <h2 class="text-xl font-semibold">{$current.title}</h2>
           {#if $current.versionLabel}<span class="badge">{$current.versionLabel}</span>{/if}
           {#if $current.model.simplified}<span class="badge badge-poc">Simplified</span>{/if}
+          {#if $current.model.textures?.length}<span class="badge">{$current.model.textures.filter((t) => !t.missing).length} texture{$current.model.textures.length === 1 ? '' : 's'}</span>{/if}
+          {#if $current.missingTextures?.length}<span class="badge badge-poc" title={$current.missingTextures.join(', ')}>{$current.missingTextures.length} missing</span>{/if}
         </div>
         <p class="text-sm text-muted mt-1">{$current.model.elements.length} building elements · {$current.model.storeys.length} levels · {count} comment{count === 1 ? '' : 's'} · {$current.fileName}</p>
         {#if $current.previousVersion}
@@ -104,8 +115,8 @@
         ondragover={(e) => { e.preventDefault(); dragging = true; }} ondragleave={() => (dragging = false)} ondrop={onDrop}>
         <span class="text-3xl" aria-hidden="true">📦</span>
         <span class="font-semibold">Drop an .ifc or .glb file here, or tap to choose</span>
-        <span class="text-sm text-muted">Parsed in your browser — nothing is uploaded to a server.</span>
-        <input type="file" accept=".ifc,.glb,.gltf" class="sr-only" onchange={(e) => { const f = (e.target as HTMLInputElement).files?.[0]; if (f) accept(f); }} />
+        <span class="text-sm text-muted">Textured IFC? Select or drop its image files together with it. Parsed in your browser — nothing is uploaded to a server.</span>
+        <input type="file" multiple accept=".ifc,.glb,.gltf,image/*" class="sr-only" onchange={(e) => { const fs = [...((e.target as HTMLInputElement).files ?? [])]; if (fs.length) accept(fs); }} />
       </label>
       <p class="text-sm text-muted mt-3">To share a version with a client, publish it under <code>public/projects/&lt;id&gt;/</code> — see the README.</p>
     {:else}
@@ -121,8 +132,8 @@
       <p class="text-ink-2">{bigFile.name} is {(bigFile.size / 1e6).toFixed(0)} MB. We can load a simplified version (without furniture and small parts) so it runs smoothly.</p>
       <div class="flex gap-2 justify-end flex-wrap">
         <button class="btn btn-ghost" onclick={() => (bigFile = null)}>Cancel</button>
-        <button class="btn btn-ghost" onclick={() => { const f = bigFile!; bigFile = null; run(loadFile(f, false)); }}>Load full model</button>
-        <button class="btn btn-accent" onclick={() => { const f = bigFile!; bigFile = null; run(loadFile(f, true)); }}>Load simplified</button>
+        <button class="btn btn-ghost" onclick={() => { const f = bigFile!; bigFile = null; run(loadFile(f, false, extra)); }}>Load full model</button>
+        <button class="btn btn-accent" onclick={() => { const f = bigFile!; bigFile = null; run(loadFile(f, true, extra)); }}>Load simplified</button>
       </div>
     </div>
   </div>

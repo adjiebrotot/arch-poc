@@ -1,5 +1,5 @@
-import { PBRMaterial, DynamicTexture, Color3, Texture, Material, type Scene } from '@babylonjs/core';
-import type { MaterialKey } from '@shared/model/types';
+import { PBRMaterial, DynamicTexture, Color3, Texture, RawTexture, Material, type Scene, type BaseTexture } from '@babylonjs/core';
+import type { MaterialKey, TextureInfo } from '@shared/model/types';
 
 /**
  * Curated PBR material library. Textures are procedural (canvas-generated),
@@ -122,6 +122,52 @@ export class MaterialLibrary {
     this.cache.set(id, m);
     return m;
   }
+
+  private images = new Map<string, BaseTexture>();
+  private blobUrls: string[] = [];
+
+  /** Image texture from the model itself (IFC textures, glTF base colour). */
+  private image(info: TextureInfo): BaseTexture | null {
+    let t = this.images.get(info.id);
+    if (t) return t;
+    if (info.rgba && info.width && info.height) {
+      t = RawTexture.CreateRGBATexture(info.rgba, info.width, info.height, this.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+    } else if (info.data && !info.missing) {
+      const url = URL.createObjectURL(new Blob([info.data as BlobPart], { type: info.mime ?? 'image/png' }));
+      this.blobUrls.push(url);
+      t = new Texture(url, this.scene, { noMipmap: false, invertY: info.source !== 'gltf', samplingMode: Texture.TRILINEAR_SAMPLINGMODE, mimeType: info.mime });
+    } else return null;
+    t.wrapU = t.wrapV = Texture.WRAP_ADDRESSMODE;
+    t.anisotropicFilteringLevel = 8;
+    this.images.set(info.id, t);
+    return t;
+  }
+
+  /** PBR material using a model texture; falls back to the curated material if the image is missing. */
+  getTextured(info: TextureInfo, key: MaterialKey, explicitUVs: boolean, tint?: [number, number, number, number]): PBRMaterial {
+    const id = `${info.id}|${explicitUVs ? 'uv' : 'box'}|${key}`;
+    let m = this.cache.get(id);
+    if (m) return m;
+    const base = this.image(info);
+    if (!base) return this.get(key, tint);
+    // one image, several UV scales (explicit UVs vs metre box-mapping) → per-material clone
+    const tex = (base instanceof RawTexture ? base : (base as Texture).clone()) as Texture;
+    const reps = explicitUVs ? 1 : info.scale ?? 1;
+    tex.uScale = tex.vScale = reps;
+    const b = BASE[key];
+    m = new PBRMaterial(`mat-${id}`, this.scene);
+    m.sideOrientation = Material.CounterClockWiseSideOrientation;
+    m.albedoTexture = tex;
+    m.albedoColor = Color3.White();
+    m.metallic = key === 'metal' ? b.metallic : 0;
+    m.roughness = key === 'tile' ? 0.35 : Math.max(0.55, b.roughness);
+    if (key === 'glass') { m.alpha = 0.3; m.transparencyMode = PBRMaterial.PBRMATERIAL_ALPHABLEND; m.backFaceCulling = false; }
+    this.cache.set(id, m);
+    return m;
+  }
+
+  /** Revoke later: textures may still be decoding when the scene is torn down. */
+  dispose() { const urls = this.blobUrls.splice(0); setTimeout(() => urls.forEach((u) => URL.revokeObjectURL(u)), 10_000); }
 
   setEnvIntensity(v: number) {
     for (const m of this.cache.values()) m.environmentIntensity = m.name === 'mat-glass' ? v * 1.4 : v;

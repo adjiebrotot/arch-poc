@@ -13,6 +13,8 @@ export interface LoadedModel {
   title: string;
   fileName: string;
   cacheKey: string;
+  /** IfcImageTexture files that couldn't be found */
+  missingTextures?: string[];
 }
 export interface LoadState { active: boolean; progress: number; message: string; error?: string }
 
@@ -23,7 +25,41 @@ const BASE = import.meta.env.BASE_URL;
 export const SAMPLES = [
   { id: 'duplex', title: 'Duplex townhouses', file: 'samples/duplex.ifc', blurb: 'IFC 2x3 from Revit · two mirrored homes over two levels', kind: 'IFC' },
   { id: 'family-home', title: 'Family home (template)', file: 'samples/family-home.glb', blurb: 'glTF/GLB generated from the “Family Home” template', kind: 'GLB' },
+  { id: 'textured-cottage', title: 'Textured cottage', file: 'samples/textured-cottage/textured-cottage.ifc', blurb: 'IFC4 with image, embedded and pixel textures + UV maps (CC0 photos)', kind: 'IFC' },
 ];
+
+const MIME: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp' };
+export const mimeFor = (name: string) => MIME[name.split('?')[0].split('.').pop()?.toLowerCase() ?? ''] ?? 'image/png';
+export type AssetResolver = (url: string) => Promise<ArrayBuffer | null>;
+
+/** Fill in IfcImageTexture images (external files referenced by URL). */
+async function resolveTextures(model: ModelData, resolve: AssetResolver | undefined): Promise<string[]> {
+  const missing: string[] = [];
+  for (const t of model.textures ?? []) {
+    if (t.source !== 'url' || t.data || !t.url) continue;
+    let buf: ArrayBuffer | null = null;
+    try { buf = resolve ? await resolve(t.url) : null; } catch { buf = null; }
+    if (buf && buf.byteLength) { t.data = new Uint8Array(buf); t.mime = mimeFor(t.url); t.missing = false; }
+    else { t.missing = true; missing.push(t.url); }
+  }
+  return missing;
+}
+
+/** Resolve relative texture URLs against the model's own URL (same-origin only). */
+export const urlResolver = (modelUrl: string): AssetResolver => async (rel) => {
+  if (/^(data|blob|javascript):/i.test(rel)) return null;
+  const u = new URL(rel.replace(/\\/g, '/'), new URL(modelUrl, location.href));
+  if (u.origin !== location.origin) return null; // don't fetch arbitrary hosts named inside a model file
+  const r = await fetch(u.href);
+  return r.ok ? r.arrayBuffer() : null;
+};
+
+/** Match texture URLs to image files the user dropped together with the model (by file name). */
+export const filesResolver = (files: File[]): AssetResolver => async (rel) => {
+  const name = rel.replace(/\\/g, '/').split('/').pop()!.toLowerCase();
+  const f = files.find((x) => x.name.toLowerCase() === name);
+  return f ? f.arrayBuffer() : null;
+};
 
 export const MOBILE_LIMIT_MB = 25;
 export const DESKTOP_LIMIT_MB = 150;
@@ -57,8 +93,9 @@ async function parse(buffer: ArrayBuffer, fileName: string, simplified: boolean)
 export async function loadModel(opts: {
   fileName: string; cacheKey: string; projectId: string; title: string; simplified?: boolean;
   fetchBytes: () => Promise<ArrayBuffer>; versionId?: string; versionLabel?: string; previousVersion?: string;
+  resolveAsset?: AssetResolver;
 }): Promise<LoadedModel> {
-  const key = `model:v3:${opts.cacheKey}:${opts.simplified ? 'lite' : 'full'}`;
+  const key = `model:v5:${opts.cacheKey}:${opts.simplified ? 'lite' : 'full'}`;
   loading.set({ active: true, progress: 0.02, message: 'Checking saved copy…' });
   try {
     let model = await storage.getCache<ModelData>(key);
@@ -66,10 +103,15 @@ export async function loadModel(opts: {
       loading.set({ active: true, progress: 0.05, message: 'Downloading…' });
       const buf = await opts.fetchBytes();
       model = await parse(buf, opts.fileName, !!opts.simplified);
+      if (model.textures?.some((t) => t.source === 'url')) {
+        loading.set({ active: true, progress: 0.95, message: 'Loading textures…' });
+        await resolveTextures(model, opts.resolveAsset);
+      }
       loading.set({ active: true, progress: 0.97, message: 'Saving for next time…' });
       await storage.putCache(key, model);
     }
-    const lm: LoadedModel = { model, projectId: opts.projectId, title: opts.title, fileName: opts.fileName, cacheKey: key, versionId: opts.versionId, versionLabel: opts.versionLabel, previousVersion: opts.previousVersion };
+    const missingTextures = (model.textures ?? []).filter((t) => t.missing).map((t) => t.url ?? t.name);
+    const lm: LoadedModel = { model, projectId: opts.projectId, title: opts.title, fileName: opts.fileName, cacheKey: key, versionId: opts.versionId, versionLabel: opts.versionLabel, previousVersion: opts.previousVersion, missingTextures };
     current.set(lm);
     storage.setPref('last-model', { ...lm, model: undefined, fetchUrl: (opts as { fetchUrl?: string }).fetchUrl });
     loading.set({ active: false, progress: 1, message: '' });
@@ -105,11 +147,17 @@ async function fetchBytes(url: string, label: string): Promise<ArrayBuffer> {
 export function loadSample(id: string, simplified = false) {
   const s = SAMPLES.find((x) => x.id === id) ?? SAMPLES[0];
   const url = BASE + s.file;
-  return loadModel({ fileName: s.file.split('/').pop()!, cacheKey: `sample:${s.id}`, projectId: `sample:${s.id}`, title: s.title, simplified, fetchBytes: () => fetchBytes(url, s.title), ...({ fetchUrl: url } as object) });
+  return loadModel({ fileName: s.file.split('/').pop()!, cacheKey: `sample:${s.id}`, projectId: `sample:${s.id}`, title: s.title, simplified, fetchBytes: () => fetchBytes(url, s.title), resolveAsset: urlResolver(url) });
 }
 
-export function loadFile(file: File, simplified = false) {
-  return loadModel({ fileName: file.name, cacheKey: `upload:${file.name}:${file.size}:${file.lastModified}`, projectId: `upload:${file.name}`, title: file.name.replace(/\.(ifc|glb|gltf)$/i, ''), simplified, fetchBytes: () => file.arrayBuffer() });
+/** Upload: the model file plus (optionally) the texture images it references. */
+export function loadFile(file: File, simplified = false, extraFiles: File[] = []) {
+  const assets = extraFiles.filter((f) => f !== file);
+  const sig = assets.map((f) => `${f.name}:${f.size}`).sort().join('|');
+  return loadModel({
+    fileName: file.name, cacheKey: `upload:${file.name}:${file.size}:${file.lastModified}:${sig}`, projectId: `upload:${file.name}`,
+    title: file.name.replace(/\.(ifc|glb|gltf)$/i, ''), simplified, fetchBytes: () => file.arrayBuffer(), resolveAsset: filesResolver(assets),
+  });
 }
 
 export interface PublishedProject {
@@ -128,7 +176,7 @@ export async function loadProject(id: string, simplified = false) {
   const lm = await loadModel({
     fileName: p.model.split('/').pop()!, cacheKey: `project:${id}:${p.versionId}`, projectId: `project:${id}`, title: p.title, simplified,
     versionId: p.versionId, versionLabel: p.versionLabel, previousVersion: p.previousVersion,
-    fetchBytes: () => fetchBytes(modelUrl, p.title),
+    fetchBytes: () => fetchBytes(modelUrl, p.title), resolveAsset: urlResolver(modelUrl),
   });
   if (p.comments) {
     try {

@@ -20,6 +20,30 @@ export interface ModelElement {
   normals: Float32Array;
   indices: Uint32Array;
   props?: Record<string, string | number | boolean>;
+  /** id of a TextureInfo in ModelData.textures */
+  texture?: string;
+  /** explicit texture coordinates (IfcIndexedTriangleTextureMap / glTF); otherwise box-mapped */
+  uvs?: Float32Array;
+}
+
+/** An image texture carried by the model (IFC IfcImageTexture/IfcBlobTexture/IfcPixelTexture). */
+export interface TextureInfo {
+  id: string;
+  name: string;
+  source: 'url' | 'blob' | 'pixel' | 'gltf';
+  /** IfcImageTexture URLReference (relative to the model file) */
+  url?: string;
+  /** encoded image bytes (jpg/png) */
+  data?: Uint8Array;
+  mime?: string;
+  /** raw RGBA pixels (IfcPixelTexture) */
+  rgba?: Uint8Array;
+  width?: number;
+  height?: number;
+  /** repeats per metre when the element has no explicit UVs (from TextureTransform scale) */
+  scale?: number;
+  /** URL texture whose image couldn't be found */
+  missing?: boolean;
 }
 
 export interface Storey { name: string; elevation: number }
@@ -33,6 +57,7 @@ export interface ModelData {
   bbox: { min: [number, number, number]; max: [number, number, number] };
   /** true when furniture/small parts were dropped to keep mobile happy */
   simplified?: boolean;
+  textures?: TextureInfo[];
 }
 
 export function computeBBox(elements: ModelElement[]): ModelData['bbox'] {
@@ -51,6 +76,16 @@ export function computeBBox(elements: ModelElement[]): ModelData['bbox'] {
   return { min, max };
 }
 
+/**
+ * Bounds of the building itself, ignoring site/terrain geometry (lawns, topography),
+ * which can be many times larger and would otherwise dominate camera framing and drawings.
+ */
+export function focusBBox(model: ModelData): ModelData['bbox'] {
+  const site = (e: ModelElement) => /Site|Geographic|Terrain|Topograph/i.test(e.type) || /topograph|terrain|lawn|landscape/i.test(e.name) || e.storey === 'Site';
+  const core = model.elements.filter((e) => !site(e));
+  return core.length ? computeBBox(core) : model.bbox;
+}
+
 /** Classify an IFC entity (and its colour) into the curated material library. */
 export function materialForIfc(type: string, color: [number, number, number, number], name = ''): MaterialKey {
   const t = type.toUpperCase();
@@ -61,7 +96,10 @@ export function materialForIfc(type: string, color: [number, number, number, num
   if (t.includes('RAILING') || t.includes('MEMBER') && /metal|steel|alum/.test(n)) return 'metal';
   if (t.includes('RAILING')) return 'metal';
   if (t.includes('ROOF')) return 'roof';
-  if (t.includes('SLAB')) return color[1] > color[0] + 0.2 && color[1] > color[2] + 0.2 ? 'grass' : /roof/.test(n) ? 'roof' : 'timber-floor';
+  const green = color[1] > color[0] + 0.2 && color[1] > color[2] + 0.2;
+  const siteLike = /grass|lawn|gras|turf|garden|garten|site|terrain|topo|landscap|green ?roof|gr[üu]ndach/.test(n);
+  if (t.includes('SITE') || t.includes('GEOGRAPHIC')) return 'grass';
+  if (t.includes('SLAB')) return green && siteLike ? 'grass' : green ? 'default' : /roof/.test(n) ? 'roof' : 'timber-floor';
   if (t.includes('STAIR')) return 'timber';
   if (t.includes('FOOTING') || t.includes('COLUMN') || t.includes('BEAM') || t.includes('PILE')) return 'concrete';
   if (t.includes('COVERING')) return /ceiling|clg/.test(n) ? 'plaster' : 'tile';

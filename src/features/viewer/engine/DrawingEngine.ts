@@ -2,6 +2,7 @@ import {
   Engine, Scene, Color4, Color3, Vector3, Vector4, Mesh, VertexData, ShaderMaterial, Effect, FreeCamera, Camera, Plane, Matrix,
 } from '@babylonjs/core';
 import type { ModelData, ModelElement } from '@shared/model/types';
+import { focusBBox } from '@shared/model/types';
 
 export type DrawingKind = 'plan' | 'rcp' | 'section-a' | 'section-b' | 'elev-n' | 'elev-s' | 'elev-e' | 'elev-w';
 
@@ -91,8 +92,9 @@ export class DrawingEngine {
       mat.setFloat('alpha', f[3]);
       m.material = mat;
       m.metadata = { elementId: e.id };
-      if (e.material !== 'glass') {
-        m.enableEdgesRendering(0.98);
+      // Fast O(n log n) edge finder; very heavy meshes (detailed furniture/MEP) get no edges.
+      if (e.material !== 'glass' && e.indices.length / 3 < 20000) {
+        m.enableEdgesRendering(0.98, false, { useAlternateEdgeFinder: true, useFastVertexMerger: true });
         m.edgesWidth = 2.2;
         m.edgesColor = new Color4(0.22, 0.24, 0.26, 1);
       }
@@ -121,7 +123,7 @@ export class DrawingEngine {
   setDrawing(kind: DrawingKind, storey: string) {
     this.kind = kind;
     this.storey = storey;
-    const b = this.model.bbox;
+    const b = focusBBox(this.model);
     const cx = (b.min[0] + b.max[0]) / 2, cz = (b.min[2] + b.max[2]) / 2;
     const elev = this.storeyElevation(storey);
     const next = this.nextStoreyElevation(storey);
@@ -179,7 +181,7 @@ export class DrawingEngine {
   }
 
   fit() {
-    const b = this.model.bbox;
+    const b = focusBBox(this.model);
     const { right, up } = this.axes();
     const corners: Vector3[] = [];
     for (const x of [b.min[0], b.max[0]]) for (const y of [b.min[1], b.max[1]]) for (const z of [b.min[2], b.max[2]]) corners.push(new Vector3(x, y, z));

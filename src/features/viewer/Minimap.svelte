@@ -9,11 +9,15 @@
   let canvas: HTMLCanvasElement;
   const S = 150;
   const cache = new Map<string, number[][]>();
-  const b = engine.model.bbox;
+  const b = engine.focus;
   const span = Math.max(b.max[0] - b.min[0], b.max[2] - b.min[2]) + 4;
   const cx = (b.min[0] + b.max[0]) / 2, cz = (b.min[2] + b.max[2]) / 2;
   const toPx = (x: number, z: number) => [S / 2 + ((x - cx) / span) * S, S / 2 + ((z - cz) / span) * S];
   const storeys = [...engine.model.storeys].sort((a, b) => a.elevation - b.elevation);
+
+  // the storey with the most walls (for orbit mode)
+  const wallCount = (n: string) => engine.model.elements.filter((e) => e.storey === n && /Wall/.test(e.type)).length;
+  const mainStorey = [...storeys].sort((a, b) => wallCount(b.name) - wallCount(a.name))[0];
 
   function storeyAt(y: number) {
     let s = storeys[0];
@@ -29,7 +33,7 @@
       if (t - last < 100) return;
       last = t;
       const cam = engine.scene.activeCamera!;
-      const st = storeyAt(engine.mode === 'walk' ? cam.position.y : storeys[Math.min(1, storeys.length - 1)].elevation + 1.5);
+      const st = engine.mode === 'walk' ? storeyAt(cam.position.y) : mainStorey;
       const key = st?.name ?? '';
       if (!cache.has(key)) cache.set(key, sliceModel(engine.model, (st?.elevation ?? 0) + 1.2));
       ctx.clearRect(0, 0, S, S);
