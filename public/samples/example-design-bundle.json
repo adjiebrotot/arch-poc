@@ -1,0 +1,929 @@
+{
+ "kind": "atelier-linea/design-bundle",
+ "version": 1,
+ "exportedAt": "2026-11-18T13:05:00.000Z",
+ "plan": {
+  "version": "1.0",
+  "meta": {
+   "title": "Example: Family Home (with comments)",
+   "createdBy": "client",
+   "mode": "creative",
+   "createdAt": "2026-11-18T09:00:00.000Z",
+   "seed": 21,
+   "id": "example-family"
+  },
+  "site": {
+   "width": 22.9,
+   "depth": 23.1,
+   "northAngle": 0
+  },
+  "floors": [
+   {
+    "level": 0,
+    "height": 2.7,
+    "walls": [
+     {
+      "id": "w0-0",
+      "a": [
+       0,
+       0
+      ],
+      "b": [
+       14.9,
+       0
+      ],
+      "thickness": 0.25,
+      "exterior": true
+     },
+     {
+      "id": "w0-1",
+      "a": [
+       3.6,
+       3.1
+      ],
+      "b": [
+       5.8,
+       3.1
+      ],
+      "thickness": 0.1,
+      "exterior": false
+     },
+     {
+      "id": "w0-2",
+      "a": [
+       0,
+       5
+      ],
+      "b": [
+       14.9,
+       5
+      ],
+      "thickness": 0.1,
+      "exterior": false
+     },
+     {
+      "id": "w0-3",
+      "a": [
+       0,
+       6.2
+      ],
+      "b": [
+       14.9,
+       6.2
+      ],
+      "thickness": 0.1,
+      "exterior": false
+     },
+     {
+      "id": "w0-4",
+      "a": [
+       0,
+       11.1
+      ],
+      "b": [
+       14.9,
+       11.1
+      ],
+      "thickness": 0.25,
+      "exterior": true
+     },
+     {
+      "id": "w0-5",
+      "a": [
+       0,
+       0
+      ],
+      "b": [
+       0,
+       11.1
+      ],
+      "thickness": 0.25,
+      "exterior": true
+     },
+     {
+      "id": "w0-6",
+      "a": [
+       3.6,
+       0
+      ],
+      "b": [
+       3.6,
+       5
+      ],
+      "thickness": 0.1,
+      "exterior": false
+     },
+     {
+      "id": "w0-7",
+      "a": [
+       5,
+       6.2
+      ],
+      "b": [
+       5,
+       11.1
+      ],
+      "thickness": 0.1,
+      "exterior": false
+     },
+     {
+      "id": "w0-8",
+      "a": [
+       5.8,
+       0
+      ],
+      "b": [
+       5.8,
+       5
+      ],
+      "thickness": 0.1,
+      "exterior": false
+     },
+     {
+      "id": "w0-9",
+      "a": [
+       8.7,
+       0
+      ],
+      "b": [
+       8.7,
+       5
+      ],
+      "thickness": 0.1,
+      "exterior": false
+     },
+     {
+      "id": "w0-10",
+      "a": [
+       10,
+       6.2
+      ],
+      "b": [
+       10,
+       11.1
+      ],
+      "thickness": 0.1,
+      "exterior": false
+     },
+     {
+      "id": "w0-11",
+      "a": [
+       10.4,
+       0
+      ],
+      "b": [
+       10.4,
+       5
+      ],
+      "thickness": 0.1,
+      "exterior": false
+     },
+     {
+      "id": "w0-12",
+      "a": [
+       12,
+       0
+      ],
+      "b": [
+       12,
+       5
+      ],
+      "thickness": 0.1,
+      "exterior": false
+     },
+     {
+      "id": "w0-13",
+      "a": [
+       12.5,
+       6.2
+      ],
+      "b": [
+       12.5,
+       11.1
+      ],
+      "thickness": 0.1,
+      "exterior": false
+     },
+     {
+      "id": "w0-14",
+      "a": [
+       14.9,
+       0
+      ],
+      "b": [
+       14.9,
+       11.1
+      ],
+      "thickness": 0.25,
+      "exterior": true
+     }
+    ],
+    "rooms": [
+     {
+      "id": "r0-0",
+      "name": "Main bedroom",
+      "type": "master",
+      "polygon": [
+       [
+        0,
+        0
+       ],
+       [
+        3.6,
+        0
+       ],
+       [
+        3.6,
+        3.1
+       ],
+       [
+        3.6,
+        5
+       ],
+       [
+        0,
+        5
+       ]
+      ],
+      "area": 18
+     },
+     {
+      "id": "r0-1",
+      "name": "Ensuite",
+      "type": "ensuite",
+      "polygon": [
+       [
+        3.6,
+        0
+       ],
+       [
+        5.8,
+        0
+       ],
+       [
+        5.8,
+        3.1
+       ],
+       [
+        3.6,
+        3.1
+       ]
+      ],
+      "area": 6.8
+     },
+     {
+      "id": "r0-3",
+      "name": "Bedroom 2",
+      "type": "bedroom",
+      "polygon": [
+       [
+        5.8,
+        0
+       ],
+       [
+        8.7,
+        0
+       ],
+       [
+        8.7,
+        5
+       ],
+       [
+        5.8,
+        5
+       ],
+       [
+        5.8,
+        3.1
+       ]
+      ],
+      "area": 14.5
+     },
+     {
+      "id": "r0-4",
+      "name": "Bathroom",
+      "type": "bathroom",
+      "polygon": [
+       [
+        8.7,
+        0
+       ],
+       [
+        10.4,
+        0
+       ],
+       [
+        10.4,
+        5
+       ],
+       [
+        8.7,
+        5
+       ]
+      ],
+      "area": 8.5
+     },
+     {
+      "id": "r0-5",
+      "name": "Laundry",
+      "type": "laundry",
+      "polygon": [
+       [
+        10.4,
+        0
+       ],
+       [
+        12,
+        0
+       ],
+       [
+        12,
+        5
+       ],
+       [
+        10.4,
+        5
+       ]
+      ],
+      "area": 8
+     },
+     {
+      "id": "r0-6",
+      "name": "Bedroom 3",
+      "type": "bedroom",
+      "polygon": [
+       [
+        12,
+        0
+       ],
+       [
+        14.9,
+        0
+       ],
+       [
+        14.9,
+        5
+       ],
+       [
+        12,
+        5
+       ]
+      ],
+      "area": 14.5
+     },
+     {
+      "id": "r0-2",
+      "name": "Walk-in robe",
+      "type": "other",
+      "polygon": [
+       [
+        3.6,
+        3.1
+       ],
+       [
+        5.8,
+        3.1
+       ],
+       [
+        5.8,
+        5
+       ],
+       [
+        3.6,
+        5
+       ]
+      ],
+      "area": 4.2
+     },
+     {
+      "id": "r0-11",
+      "name": "Hallway",
+      "type": "hallway",
+      "polygon": [
+       [
+        0,
+        5
+       ],
+       [
+        3.6,
+        5
+       ],
+       [
+        5.8,
+        5
+       ],
+       [
+        8.7,
+        5
+       ],
+       [
+        10.4,
+        5
+       ],
+       [
+        12,
+        5
+       ],
+       [
+        14.9,
+        5
+       ],
+       [
+        14.9,
+        6.2
+       ],
+       [
+        12.5,
+        6.2
+       ],
+       [
+        10,
+        6.2
+       ],
+       [
+        5,
+        6.2
+       ],
+       [
+        0,
+        6.2
+       ]
+      ],
+      "area": 17.9
+     },
+     {
+      "id": "r0-7",
+      "name": "Garage",
+      "type": "garage",
+      "polygon": [
+       [
+        0,
+        6.2
+       ],
+       [
+        5,
+        6.2
+       ],
+       [
+        5,
+        11.1
+       ],
+       [
+        0,
+        11.1
+       ]
+      ],
+      "area": 24.5
+     },
+     {
+      "id": "r0-8",
+      "name": "Living",
+      "type": "living",
+      "polygon": [
+       [
+        5,
+        6.2
+       ],
+       [
+        10,
+        6.2
+       ],
+       [
+        10,
+        11.1
+       ],
+       [
+        5,
+        11.1
+       ]
+      ],
+      "area": 24.5
+     },
+     {
+      "id": "r0-9",
+      "name": "Kitchen",
+      "type": "kitchen",
+      "polygon": [
+       [
+        10,
+        6.2
+       ],
+       [
+        12.5,
+        6.2
+       ],
+       [
+        12.5,
+        11.1
+       ],
+       [
+        10,
+        11.1
+       ]
+      ],
+      "area": 12.3
+     },
+     {
+      "id": "r0-10",
+      "name": "Study",
+      "type": "study",
+      "polygon": [
+       [
+        12.5,
+        6.2
+       ],
+       [
+        14.9,
+        6.2
+       ],
+       [
+        14.9,
+        11.1
+       ],
+       [
+        12.5,
+        11.1
+       ]
+      ],
+      "area": 11.8
+     }
+    ],
+    "openings": [
+     {
+      "id": "o0-0",
+      "wallId": "w0-2",
+      "type": "door",
+      "offset": 0.71,
+      "width": 0.82,
+      "height": 2.04
+     },
+     {
+      "id": "o0-1",
+      "wallId": "w0-6",
+      "type": "door",
+      "offset": 0.71,
+      "width": 0.82,
+      "height": 2.04
+     },
+     {
+      "id": "o0-2",
+      "wallId": "w0-6",
+      "type": "door",
+      "offset": 3.81,
+      "width": 0.82,
+      "height": 2.04
+     },
+     {
+      "id": "o0-3",
+      "wallId": "w0-2",
+      "type": "door",
+      "offset": 6.51,
+      "width": 0.82,
+      "height": 2.04
+     },
+     {
+      "id": "o0-4",
+      "wallId": "w0-2",
+      "type": "door",
+      "offset": 9.41,
+      "width": 0.82,
+      "height": 2.04
+     },
+     {
+      "id": "o0-5",
+      "wallId": "w0-2",
+      "type": "door",
+      "offset": 11.11,
+      "width": 0.82,
+      "height": 2.04
+     },
+     {
+      "id": "o0-6",
+      "wallId": "w0-2",
+      "type": "door",
+      "offset": 12.71,
+      "width": 0.82,
+      "height": 2.04
+     },
+     {
+      "id": "o0-7",
+      "wallId": "w0-3",
+      "type": "door",
+      "offset": 0.71,
+      "width": 0.82,
+      "height": 2.04
+     },
+     {
+      "id": "o0-8",
+      "wallId": "w0-3",
+      "type": "door",
+      "offset": 5.71,
+      "width": 0.82,
+      "height": 2.04
+     },
+     {
+      "id": "o0-9",
+      "wallId": "w0-3",
+      "type": "door",
+      "offset": 10.71,
+      "width": 0.82,
+      "height": 2.04
+     },
+     {
+      "id": "o0-10",
+      "wallId": "w0-3",
+      "type": "door",
+      "offset": 13.21,
+      "width": 0.82,
+      "height": 2.04
+     },
+     {
+      "id": "o0-11",
+      "wallId": "w0-10",
+      "type": "door",
+      "offset": 2.45,
+      "width": 1.8,
+      "height": 2.1
+     },
+     {
+      "id": "o0-12",
+      "wallId": "w0-0",
+      "type": "window",
+      "offset": 1.8,
+      "width": 1.8,
+      "height": 1.4,
+      "sill": 0.8
+     },
+     {
+      "id": "o0-13",
+      "wallId": "w0-5",
+      "type": "window",
+      "offset": 2.5,
+      "width": 1.8,
+      "height": 1.4,
+      "sill": 0.8
+     },
+     {
+      "id": "o0-14",
+      "wallId": "w0-0",
+      "type": "window",
+      "offset": 4.7,
+      "width": 0.8,
+      "height": 0.6,
+      "sill": 1.5
+     },
+     {
+      "id": "o0-15",
+      "wallId": "w0-0",
+      "type": "window",
+      "offset": 7.25,
+      "width": 1.5,
+      "height": 1.4,
+      "sill": 0.8
+     },
+     {
+      "id": "o0-16",
+      "wallId": "w0-0",
+      "type": "window",
+      "offset": 9.55,
+      "width": 0.8,
+      "height": 0.6,
+      "sill": 1.5
+     },
+     {
+      "id": "o0-17",
+      "wallId": "w0-0",
+      "type": "window",
+      "offset": 11.2,
+      "width": 0.8,
+      "height": 1,
+      "sill": 1.1
+     },
+     {
+      "id": "o0-18",
+      "wallId": "w0-0",
+      "type": "window",
+      "offset": 13.45,
+      "width": 1.5,
+      "height": 1.4,
+      "sill": 0.8
+     },
+     {
+      "id": "o0-19",
+      "wallId": "w0-14",
+      "type": "window",
+      "offset": 2.5,
+      "width": 1.5,
+      "height": 1.4,
+      "sill": 0.8
+     },
+     {
+      "id": "o0-20",
+      "wallId": "w0-4",
+      "type": "door",
+      "offset": 2.5,
+      "width": 2.7,
+      "height": 2.2
+     },
+     {
+      "id": "o0-21",
+      "wallId": "w0-4",
+      "type": "door",
+      "offset": 9.3,
+      "width": 0.92,
+      "height": 2.1
+     },
+     {
+      "id": "o0-22",
+      "wallId": "w0-4",
+      "type": "window",
+      "offset": 6.8,
+      "width": 2.4,
+      "height": 2.1,
+      "sill": 0.1
+     },
+     {
+      "id": "o0-23",
+      "wallId": "w0-4",
+      "type": "window",
+      "offset": 11.25,
+      "width": 1.4,
+      "height": 1,
+      "sill": 1.05
+     },
+     {
+      "id": "o0-24",
+      "wallId": "w0-4",
+      "type": "window",
+      "offset": 13.7,
+      "width": 1.2,
+      "height": 1.4,
+      "sill": 0.8
+     },
+     {
+      "id": "o0-25",
+      "wallId": "w0-14",
+      "type": "window",
+      "offset": 8.65,
+      "width": 1.2,
+      "height": 1.4,
+      "sill": 0.8
+     }
+    ]
+   }
+  ],
+  "requirements": {
+   "area": 165,
+   "floors": 1,
+   "bedrooms": 3,
+   "bathrooms": 2,
+   "extras": [
+    "garage",
+    "study",
+    "laundry"
+   ],
+   "notes": ""
+  }
+ },
+ "comments": [
+  {
+   "id": "ex-c1",
+   "projectId": "plan:example-family",
+   "source": "design-workspace",
+   "anchor": {
+    "elementId": "r0-8",
+    "elementKind": "room",
+    "local": [
+     0.4,
+     0.2
+    ],
+    "elementLabel": "Living",
+    "floor": 0,
+    "position": [
+     7.9,
+     0,
+     8.849999999999998
+    ]
+   },
+   "text": "Love this size for the living room. Can it open to the garden with big sliding doors?",
+   "category": "like",
+   "author": "Priya (client)",
+   "role": "client",
+   "createdAt": "2026-11-18T09:20:00.000Z",
+   "status": "open",
+   "replies": [
+    {
+     "id": "ex-r1",
+     "projectId": "plan:example-family",
+     "source": "design-workspace",
+     "anchor": {
+      "position": [
+       0,
+       0,
+       0
+      ]
+     },
+     "text": "Yes — we will show a 3.6 m stacking slider on the north side.",
+     "author": "Atelier Linea",
+     "role": "architect",
+     "createdAt": "2026-11-18T13:00:00.000Z",
+     "status": "open",
+     "replies": []
+    }
+   ]
+  },
+  {
+   "id": "ex-c2",
+   "projectId": "plan:example-family",
+   "source": "design-workspace",
+   "anchor": {
+    "elementId": "r0-0",
+    "elementKind": "room",
+    "local": [
+     -0.5,
+     0.3
+    ],
+    "elementLabel": "Main bedroom",
+    "floor": 0,
+    "position": [
+     1.2999999999999998,
+     0,
+     2.8
+    ]
+   },
+   "text": "Could the main bedroom be a little wider so a king bed fits with bedside tables?",
+   "category": "change",
+   "author": "Sam (client)",
+   "role": "client",
+   "createdAt": "2026-11-18T09:31:00.000Z",
+   "status": "open",
+   "replies": []
+  },
+  {
+   "id": "ex-c3",
+   "projectId": "plan:example-family",
+   "source": "design-workspace",
+   "anchor": {
+    "elementId": "w0-0",
+    "elementKind": "wall",
+    "local": [
+     0.5,
+     -0.4
+    ],
+    "elementLabel": "Outside wall",
+    "floor": 0,
+    "position": [
+     7.45,
+     0,
+     0
+    ]
+   },
+   "text": "Which way is north? We would like morning sun in the kitchen.",
+   "category": "question",
+   "author": "Priya (client)",
+   "role": "client",
+   "createdAt": "2026-11-18T10:02:00.000Z",
+   "status": "open",
+   "replies": []
+  },
+  {
+   "id": "ex-c4",
+   "projectId": "plan:example-family",
+   "source": "design-workspace",
+   "anchor": {
+    "elementId": "r0-7",
+    "elementKind": "room",
+    "local": [
+     0,
+     0
+    ],
+    "elementLabel": "Garage",
+    "floor": 0,
+    "position": [
+     2.5,
+     0,
+     8.65
+    ]
+   },
+   "text": "Garage fits two cars side by side with 600 mm storage at the back.",
+   "category": "like",
+   "author": "Atelier Linea",
+   "role": "architect",
+   "createdAt": "2026-11-18T12:45:00.000Z",
+   "status": "resolved",
+   "replies": []
+  }
+ ],
+ "requirements": {
+  "area": 165,
+  "floors": 1,
+  "bedrooms": 3,
+  "bathrooms": 2,
+  "extras": [
+   "garage",
+   "study",
+   "laundry"
+  ],
+  "notes": ""
+ }
+}
