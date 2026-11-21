@@ -1,4 +1,4 @@
-import { PBRMaterial, DynamicTexture, Color3, Texture, RawTexture, Material, type Scene, type BaseTexture } from '@babylonjs/core';
+import { PBRMaterial, DynamicTexture, Color3, Texture, RawTexture, Material, type Scene, type BaseTexture, type Plane, type Nullable } from '@babylonjs/core';
 import type { MaterialKey, TextureInfo } from '@shared/model/types';
 
 /**
@@ -83,9 +83,29 @@ const BASE: Record<MaterialKey, { color: string; metallic: number; roughness: nu
   default: { color: '#D9D5CE', metallic: 0, roughness: 0.8 },
 };
 
+/**
+ * Every model surface is drawn from both sides. IFC exporters (Revit included) regularly emit
+ * faces with inverted orientation, e.g. a whole bed mattress turned inside out; with back-face
+ * culling those parts simply vanish and leave stray legs and rails floating in the room.
+ * Two-sided lighting flips the normal on back faces so they are lit as if facing the viewer.
+ * It also keeps cut walls from looking paper-thin when a section plane slices the model.
+ */
+function twoSided(m: PBRMaterial) {
+  m.backFaceCulling = false;
+  m.twoSidedLighting = true;
+}
+
 export class MaterialLibrary {
   private cache = new Map<string, PBRMaterial>();
+  /** horizontal section plane applied to every model material (null = whole model) */
+  private clip: Nullable<Plane> = null;
   constructor(private scene: Scene, private texSize = 512) {}
+
+  /** Cut the model with a plane (fragments on its positive side are discarded). */
+  setClipPlane(plane: Nullable<Plane>) {
+    this.clip = plane;
+    for (const m of this.cache.values()) m.clipPlane = plane;
+  }
 
   get(key: MaterialKey, tint?: [number, number, number, number]): PBRMaterial {
     // furniture/default keep their own colour (quantised so materials are shared)
@@ -100,6 +120,8 @@ export class MaterialLibrary {
     m.sideOrientation = Material.CounterClockWiseSideOrientation;
     m.metallic = b.metallic;
     m.roughness = b.roughness;
+    twoSided(m);
+    m.clipPlane = this.clip;
     const p = painters[key];
     if (p) {
       const t = new DynamicTexture(`tex-${key}`, { width: this.texSize, height: this.texSize }, this.scene, true);
@@ -161,6 +183,8 @@ export class MaterialLibrary {
     m.albedoColor = Color3.White();
     m.metallic = key === 'metal' ? b.metallic : 0;
     m.roughness = key === 'tile' ? 0.35 : Math.max(0.55, b.roughness);
+    twoSided(m);
+    m.clipPlane = this.clip;
     if (key === 'glass') { m.alpha = 0.3; m.transparencyMode = PBRMaterial.PBRMATERIAL_ALPHABLEND; m.backFaceCulling = false; }
     this.cache.set(id, m);
     return m;
