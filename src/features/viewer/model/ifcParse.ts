@@ -5,6 +5,7 @@
  */
 import {
   type IfcAPI, IFCBUILDINGSTOREY, IFCRELCONTAINEDINSPATIALSTRUCTURE, IFCRELAGGREGATES, IFCRELDEFINESBYPROPERTIES,
+  IFCRELDEFINESBYTYPE,
 } from 'web-ifc';
 import type { ModelData, ModelElement, Storey } from '@shared/model/types';
 import { computeBBox, materialForIfc, SIMPLIFY_DROP } from '@shared/model/types';
@@ -86,6 +87,28 @@ export function parseIfc(api: IfcAPI, data: Uint8Array, opts: ParseOptions = {})
       } catch { /* malformed pset: skip */ }
     }
 
+    // ---- door / window operation (hinge side, swing, sliding…) ------------------------
+    const typeOf = new Map<number, number>();
+    const rdt = api.GetLineIDsWithType(modelID, IFCRELDEFINESBYTYPE);
+    for (let i = 0; i < rdt.size(); i++) {
+      try {
+        const l = api.GetLine(modelID, rdt.get(i));
+        const t = Number(val(l.RelatingType));
+        for (const o of refs(l.RelatedObjects)) typeOf.set(o, t);
+      } catch { /* skip */ }
+    }
+    const operable = new Map<number, { operation?: string; axes?: ModelElement['axes'] }>();
+    const operableInfo = (id: number, T: string) => {
+      let r = operable.get(id);
+      if (!r) {
+        r = {};
+        try { r.operation = operationOf(api, modelID, id, T, typeOf.get(id)); } catch { /* noop */ }
+        try { r.axes = placementAxes(api, modelID, id); } catch { /* noop */ }
+        operable.set(id, r);
+      }
+      return r;
+    };
+
     progress(0.13, 'Reading materials and textures…');
     let tex: ReturnType<typeof indexIfcTextures> | null = null;
     try { tex = indexIfcTextures(api, modelID); } catch (e) { console.warn('texture index failed', e); }
@@ -153,6 +176,7 @@ export function parseIfc(api: IfcAPI, data: Uint8Array, opts: ParseOptions = {})
         (geom as { delete?: () => void }).delete?.();
       }
       let gi = 0;
+      const op = T.includes('DOOR') || T.includes('WINDOW') ? operableInfo(id, T) : null;
       const roofSlab = T === 'IFCSLAB' && isRoofSlab(id, name);
       for (const grp of groups.values()) {
         if (!grp.i.length) continue;
@@ -173,6 +197,8 @@ export function parseIfc(api: IfcAPI, data: Uint8Array, opts: ParseOptions = {})
           props: props.get(id),
           ...(grp.tex !== null ? { texture: `tex-${grp.tex}` } : {}),
           ...(grp.uv ? { uvs: new Float32Array(grp.uv) } : {}),
+          ...(op?.operation ? { operation: op.operation } : {}),
+          ...(op?.axes ? { axes: op.axes } : {}),
         });
       }
       if (index - lastReport > total / 50) { lastReport = index; progress(0.15 + 0.8 * (index / Math.max(1, total)), `Building geometry… ${index}/${total}`); }
@@ -212,6 +238,79 @@ export function parseIfc(api: IfcAPI, data: Uint8Array, opts: ParseOptions = {})
   } finally {
     api.CloseModel(modelID);
   }
+}
+
+const UNSET = /^(NOTDEFINED|USERDEFINED|)$/i;
+
+/**
+ * How a door/window opens, from the occurrence (IFC4 IfcDoor.OperationType) or its type
+ * (IfcDoorStyle / IfcDoorType .OperationType; IfcWindowPanelProperties.OperationType).
+ * Returns the IFC enum text, e.g. SINGLE_SWING_LEFT, SLIDING_TO_RIGHT, SIDEHUNGLEFTHAND, FIXEDCASEMENT.
+ */
+function operationOf(api: IfcAPI, modelID: number, id: number, T: string, typeId?: number): string | undefined {
+  const l = api.GetLine(modelID, id);
+  const own = str(l.OperationType);
+  if (!UNSET.test(own)) return own.toUpperCase();
+  if (typeId === undefined) return undefined;
+  const t = api.GetLine(modelID, typeId);
+  const tOp = str(t?.OperationType);
+  if (T.includes('DOOR')) return UNSET.test(tOp) ? undefined : tOp.toUpperCase();
+  // windows: panel operation lives in IfcWindowPanelProperties attached to the type
+  const ops: string[] = [];
+  for (const ps of refs(t?.HasPropertySets)) {
+    try {
+      if (api.GetNameFromTypeCode(api.GetLineType(modelID, ps)).toUpperCase() !== 'IFCWINDOWPANELPROPERTIES') continue;
+      const op = str(api.GetLine(modelID, ps).OperationType);
+      if (!UNSET.test(op)) ops.push(op.toUpperCase());
+    } catch { /* noop */ }
+  }
+  return ops.find((o) => o !== 'FIXEDCASEMENT') ?? ops[0];
+}
+
+/**
+ * World-space (Y-up, as web-ifc outputs) unit vectors of the element's local X and Y axes,
+ * resolved through the IfcLocalPlacement chain. IFC convention: a door swings towards its
+ * local +Y; "left/right" hinges are as seen looking along +Y.
+ */
+function placementAxes(api: IfcAPI, modelID: number, id: number): ModelElement['axes'] | undefined {
+  type M3 = number[]; // row-major 3x3, columns = local axes in parent frame
+  const mul = (a: M3, b: M3): M3 => {
+    const r = new Array(9).fill(0);
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) for (let k = 0; k < 3; k++) r[i * 3 + j] += a[i * 3 + k] * b[k * 3 + j];
+    return r;
+  };
+  const dir = (ref: unknown): number[] | null => {
+    const rid = Number(val(ref));
+    if (!Number.isFinite(rid) || !rid) return null;
+    const d = (api.GetLine(modelID, rid).DirectionRatios ?? []).map((x: unknown) => Number(val(x)));
+    while (d.length < 3) d.push(0);
+    const n = Math.hypot(d[0], d[1], d[2]);
+    return n > 1e-9 ? d.map((x: number) => x / n) : null;
+  };
+  const local = (placementId: number): M3 => {
+    const p = api.GetLine(modelID, placementId);
+    const rel = api.GetLine(modelID, Number(val(p.RelativePlacement)));
+    const z = dir(rel.Axis) ?? [0, 0, 1];
+    let x = dir(rel.RefDirection) ?? (Math.abs(z[2]) > 0.9 ? [1, 0, 0] : [0, 0, 1]);
+    const dz = x[0] * z[0] + x[1] * z[1] + x[2] * z[2];
+    x = [x[0] - dz * z[0], x[1] - dz * z[1], x[2] - dz * z[2]];
+    const xn = Math.hypot(x[0], x[1], x[2]) || 1;
+    x = x.map((v) => v / xn);
+    const y = [z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]];
+    return [x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2]];
+  };
+  let pid = Number(val(api.GetLine(modelID, id).ObjectPlacement));
+  const chain: M3[] = [];
+  for (let guard = 0; Number.isFinite(pid) && pid && guard < 32; guard++) {
+    chain.unshift(local(pid));
+    pid = Number(val(api.GetLine(modelID, pid).PlacementRelTo));
+  }
+  if (!chain.length) return undefined;
+  const R = chain.reduce(mul);
+  // IFC Z-up → web-ifc Y-up: (x, y, z) → (x, z, -y)
+  const toWorld = (c: number) => [R[c], R[6 + c], -R[3 + c]].map((v) => Math.round(v * 1e4) / 1e4);
+  const X = toWorld(0), Y = toWorld(1);
+  return [X[0], X[1], X[2], Y[0], Y[1], Y[2]];
 }
 
 /** True when most upward-facing normals are pitched (a sloped slab is a roof, not a floor). */

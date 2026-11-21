@@ -159,9 +159,12 @@ function wallElements(w: Wall, openings: PlanSpec['floors'][number]['openings'],
   const at = (s: number) => [w.a[0] + u[0] * s, 0, w.a[1] + u[2] * s];
   const ops = [...openings].sort((a, b) => a.offset - b.offset).map((o) => ({ ...o, s0: Math.max(0, o.offset - o.width / 2), s1: Math.min(len, o.offset + o.width / 2) }));
   const wall = new Builder();
-  const glass = new Builder();
-  const frame = new Builder();
-  const door = new Builder();
+  const parts: ModelElement[] = [];
+  // local axes for doors/windows: X along the wall, Y = +v (the side doors swing to)
+  const axes: ModelElement['axes'] = [u[0], 0, u[2], v[0], 0, v[2]];
+  const add = (e: ModelElement | null, group: string, role: 'leaf' | 'frame', operation?: string) => {
+    if (e) parts.push({ ...e, openingGroup: group, openingRole: role, axes, ...(operation ? { operation } : {}) });
+  };
   let s = -ext;
   const piece = (a: number, b: number, y0: number, y1: number) => {
     if (b - a < 0.005 || y1 - y0 < 0.005) return;
@@ -174,20 +177,21 @@ function wallElements(w: Wall, openings: PlanSpec['floors'][number]['openings'],
     piece(o.s0, o.s1, 0, sill);
     piece(o.s0, o.s1, head, H);
     const mid = at((o.s0 + o.s1) / 2);
+    const group = `${w.id}-${o.id}`;
     if (o.type === 'window') {
-      glass.box(mid, u, v, o.s1 - o.s0, 0.02, elev + sill, elev + head);
+      const glass = new Builder(), frame = new Builder();
+      glass.box(mid, u, v, o.s1 - o.s0 - 0.1, 0.02, elev + sill + 0.01, elev + head - 0.05);
       frame.box(mid, u, v, o.s1 - o.s0, w.thickness * 0.9, elev + sill - 0.03, elev + sill);
       frame.box(at(o.s0 + 0.025), u, v, 0.05, 0.08, elev + sill, elev + head);
       frame.box(at(o.s1 - 0.025), u, v, 0.05, 0.08, elev + sill, elev + head);
       frame.box(mid, u, v, o.s1 - o.s0, 0.08, elev + head - 0.05, elev + head);
+      add(glass.element(`glass-${group}`, 'Window glazing', 'IfcWindow', storey, 'glass', [0.6, 0.75, 0.85, 0.25]), group, 'leaf');
+      add(frame.element(`frame-${group}`, 'Window frame', 'IfcWindow', storey, 'metal', [0.2, 0.2, 0.2, 1]), group, 'frame');
     } else if (o.width < 1.3) {
-      // door leaf, opened ~70° into the room on the +v side
-      const ang = (70 * Math.PI) / 180;
-      const du = [u[0] * Math.cos(ang) + v[0] * Math.sin(ang), 0, u[2] * Math.cos(ang) + v[2] * Math.sin(ang)];
-      const dv = [-du[2], 0, du[0]];
-      const hinge = at(o.s0);
-      const lw = o.s1 - o.s0 - 0.02;
-      door.box([hinge[0] + du[0] * lw / 2 + v[0] * ext, 0, hinge[2] + du[2] * lw / 2 + v[2] * ext], du, dv, lw, 0.04, elev, elev + head - 0.01);
+      // closed door leaf in the middle of the wall; hinged at the s0 end, swings into the +v side
+      const door = new Builder();
+      door.box(mid, u, v, o.s1 - o.s0 - 0.02, 0.04, elev, elev + head - 0.01);
+      add(door.element(`door-${group}`, 'Door', 'IfcDoor', storey, 'timber', [0.6, 0.45, 0.3, 1]), group, 'leaf', 'SINGLE_SWING_LEFT');
     }
     s = o.s1;
   }
@@ -195,8 +199,6 @@ function wallElements(w: Wall, openings: PlanSpec['floors'][number]['openings'],
   const props = { length: Math.round(len * 100) / 100, thickness: w.thickness, exterior: w.exterior };
   return [
     wall.element(`wall-${w.id}`, w.exterior ? 'Exterior wall' : 'Interior wall', 'IfcWall', storey, w.exterior ? 'exterior' : 'plaster', [0.95, 0.94, 0.92, 1], props),
-    glass.element(`glass-${w.id}`, 'Window glazing', 'IfcWindow', storey, 'glass', [0.6, 0.75, 0.85, 0.25]),
-    frame.element(`frame-${w.id}`, 'Window frame', 'IfcWindow', storey, 'metal', [0.2, 0.2, 0.2, 1]),
-    door.element(`door-${w.id}`, 'Door', 'IfcDoor', storey, 'timber', [0.6, 0.45, 0.3, 1]),
+    ...parts,
   ].filter((e): e is ModelElement => !!e);
 }

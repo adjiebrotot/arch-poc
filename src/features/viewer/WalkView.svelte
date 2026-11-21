@@ -10,7 +10,7 @@
   import CommentComposer from '@shared/comments/CommentComposer.svelte';
   import ThreadView from '@shared/comments/ThreadView.svelte';
   import { current, restoreLast, loading } from './model/modelStore';
-  import { ViewerEngine, defaultQuality, isMobileDevice, type Quality, type PickResult } from './engine/ViewerEngine';
+  import { ViewerEngine, defaultQuality, isMobileDevice, type Quality, type PickResult, type OpeningRT } from './engine/ViewerEngine';
   import { friendlyType } from '@shared/model/labels';
   import Joystick from './Joystick.svelte';
   import Minimap from './Minimap.svelte';
@@ -32,7 +32,19 @@
   let fps = $state(0);
   let showFps = $state(false);
   let locked = $state(false);
+  let focus = $state<{ id: string; name: string; kind: 'door' | 'window'; open: boolean; description: string } | null>(null);
   const touch = isMobileDevice();
+  function syncFocus() {
+    if (!engine) return;
+    if (engine.mode !== mode) mode = engine.mode;
+    const o = engine.focusOpening;
+    focus = o ? { id: o.id, name: o.name, kind: o.kind, open: o.open, description: o.description } : null;
+  }
+  function toggle(o: OpeningRT | null) {
+    if (!o || !engine) return;
+    engine.toggleOpening(o);
+    syncFocus();
+  }
 
   const projectId = $derived($current?.projectId ?? '');
   const projectComments = $derived($comments.filter((c) => c.projectId === projectId && c.source !== 'design-workspace'));
@@ -46,6 +58,7 @@
         if (disposed) return;
         if (!lm) { status = 'missing'; return; }
         engine = new ViewerEngine(canvas!, lm.model, quality);
+        engine.onInteract = () => syncFocus();
         if (import.meta.env.DEV) (window as unknown as { __viewer: ViewerEngine }).__viewer = engine;
         status = 'ready';
         const focus = $route.query.get('comment');
@@ -56,9 +69,10 @@
       }
     })();
     const fpsTimer = setInterval(() => (fps = Math.round(engine?.fps ?? 0)), 500);
+    const focusTimer = setInterval(syncFocus, 150);
     const onLock = () => (locked = document.pointerLockElement === canvas);
     document.addEventListener('pointerlockchange', onLock);
-    return () => { disposed = true; clearInterval(fpsTimer); document.removeEventListener('pointerlockchange', onLock); engine?.dispose(); };
+    return () => { disposed = true; clearInterval(fpsTimer); clearInterval(focusTimer); document.removeEventListener('pointerlockchange', onLock); engine?.dispose(); };
   });
 
   $effect(() => { engine?.setPins(projectComments, threadId); });
@@ -155,9 +169,15 @@
     if (commenting) return placeComment(x, y);
     if (mode === 'walk') {
       if (e.pointerType === 'mouse') {
-        if (!document.pointerLockElement) canvas!.requestPointerLock?.();
+        // looking around with the mouse captured: click = use the door/window in front of you
+        if (document.pointerLockElement) { engine.updateFocus(); return toggle(engine.focusOpening); }
+        const o = engine.openingAt(x, y);
+        if (o) return toggle(o);
+        canvas!.requestPointerLock?.();
         return;
       }
+      const o = engine.openingAt(x, y);
+      if (o) return toggle(o);
       const p = engine.pick(x, y);
       if (p && p.normal.y > 0.7) engine.walkTo(new Vector3(p.point.x, p.point.y, p.point.z));
     }
@@ -205,7 +225,20 @@
       </div>
       <div class="absolute top-16 inset-x-0 flex justify-center pointer-events-none"><div class="rounded-full bg-accent text-white px-4 py-2 text-sm font-semibold shadow-lg">Movement paused · tap the spot you want to comment on</div></div>
     {:else if mode === 'walk' && !touch && !locked}
-      <div class="absolute top-16 inset-x-0 flex justify-center pointer-events-none"><div class="rounded-full bg-black/55 text-white px-4 py-2 text-xs shadow">Click to look around · WASD / arrows to walk · double-click the floor to go there · Esc to release</div></div>
+      <div class="absolute top-16 inset-x-0 flex justify-center pointer-events-none"><div class="rounded-full bg-black/55 text-white px-4 py-2 text-xs shadow text-center">Click to look around · WASD to walk · Shift to run · E to open doors &amp; windows · double-click the floor to go there · Esc to release</div></div>
+    {/if}
+    {#if mode === 'walk' && locked && !commenting}
+      <div class="absolute inset-0 pointer-events-none grid place-items-center"><div class="w-1.5 h-1.5 rounded-full bg-white shadow-[0_0_0_1.5px_rgba(0,0,0,.45)]"></div></div>
+    {/if}
+    {#if focus && mode === 'walk' && !commenting}
+      <div class="absolute inset-x-0 bottom-36 md:bottom-28 flex justify-center pointer-events-none">
+        <button class="pointer-events-auto flex items-center gap-3 rounded-2xl bg-black/65 backdrop-blur text-white pl-2 pr-4 py-2 shadow-lg text-left"
+          onclick={() => toggle(engine?.openings.find((o) => o.id === focus?.id) ?? null)}>
+          <kbd class="grid place-items-center min-w-9 h-9 rounded-lg bg-white text-ink font-bold text-sm">{touch ? (focus.kind === 'door' ? '🚪' : '🪟') : 'E'}</kbd>
+          <span><span class="block text-sm font-semibold">{focus.open ? 'Close' : 'Open'} {focus.name.toLowerCase().includes(focus.kind) ? focus.name : `${focus.kind}: ${focus.name}`}</span>
+          <span class="block text-[11px] opacity-80">{focus.description}</span></span>
+        </button>
+      </div>
     {/if}
     {#if showFps}<div class="absolute top-16 left-3 rounded bg-black/60 text-white text-xs px-2 py-1 tabular-nums">{fps} fps · {quality}</div>{/if}
 
@@ -243,6 +276,16 @@
         {#each storeyNames as s}<button class="chip" class:on={cutaway === s} onclick={() => setCutaway(s)}>Up to {s}</button>{/each}
       </div>
     </div>
+    {#if engine && engine.openings.length}
+      <div class="field"><span>Doors &amp; windows</span>
+        <div class="flex gap-2 flex-wrap">
+          <button class="chip" onclick={() => { engine?.setAllOpen(true); syncFocus(); }}>Open all doors</button>
+          <button class="chip" onclick={() => { engine?.setAllOpen(false, ['door', 'window']); syncFocus(); }}>Close everything</button>
+          <button class="chip" onclick={() => { engine?.setAllOpen(true, ['window']); syncFocus(); }}>Open all windows</button>
+        </div>
+        <small class="text-muted">In the walkthrough, look at a door or window and press <strong>E</strong> (or tap it) to open or close it.</small>
+      </div>
+    {/if}
     <label class="flex items-center gap-3"><input type="checkbox" class="w-5 h-5 accent-[#A4502F]" bind:checked={showFps} /> Show frame rate</label>
   </div>
 </BottomSheet>

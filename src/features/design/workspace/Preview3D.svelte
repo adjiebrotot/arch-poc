@@ -18,6 +18,8 @@
       engine.setMode('orbit');
       engine.orbitCam.beta = 0.85;
       engine.orbitCam.radius = engine.size * 1.3;
+      // show doors open so rooms read clearly from above
+      engine.setAllOpen(true, ['door'], false);
     } catch (e) {
       error = '3D preview needs WebGL, which this device doesn’t support.';
       console.error(e);

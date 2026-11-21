@@ -2,7 +2,7 @@ import {
   Engine, Scene, Color3, Color4, Vector3, Mesh, VertexData, DirectionalLight, HemisphericLight, CascadedShadowGenerator,
   DefaultRenderingPipeline, SSAO2RenderingPipeline, SSRRenderingPipeline, ImageProcessingConfiguration, CubeTexture,
   UniversalCamera, ArcRotateCamera, Ray, MeshBuilder, DynamicTexture, StandardMaterial, Matrix, type AbstractMesh,
-  type Observer, type Nullable, type Camera, PBRMaterial, Texture, Material,
+  type Observer, type Nullable, type Camera, PBRMaterial, Texture, Material, TransformNode, Quaternion,
 } from '@babylonjs/core';
 import { SkyMaterial } from '@babylonjs/materials/sky/skyMaterial';
 import type { ModelData, ModelElement } from '@shared/model/types';
@@ -10,6 +10,7 @@ import { focusBBox } from '@shared/model/types';
 import type { CameraSnapshot, Comment } from '@shared/comments/model';
 import { CATEGORY_ICON } from '@shared/comments/model';
 import { MaterialLibrary } from './materials';
+import { extractOpenings, type Opening, type Motion } from './openings';
 
 export type Quality = 'low' | 'medium' | 'high';
 export type CamMode = 'walk' | 'orbit';
@@ -36,6 +37,20 @@ export interface PickResult {
 }
 
 const NO_COLLIDE = /Window|Door|Furnishing|Covering|Member/;
+
+/** Game-like walking speeds (m/s). */
+export const WALK_SPEED = 4.3;
+export const RUN_SPEED = 7.5;
+const TURN_SPEED = 2.2; // rad/s for the arrow keys
+const REACH = 3.2; // how far away you can open a door (m)
+
+/** A door/window in the scene, with its animation state. */
+export interface OpeningRT extends Omit<Opening, 'leaves'> {
+  open: boolean;
+  /** animation progress 0 (closed) … 1 (open) */
+  t: number;
+  leaves: { node: TransformNode; motion: Motion; base: Vector3; sign: number; meshes: Mesh[] }[];
+}
 
 /** Box-mapped world-space UVs (1 unit = 1 m) so procedural textures look right on IFC geometry. */
 function boxUVs(p: Float32Array, n: Float32Array): Float32Array {
@@ -78,6 +93,17 @@ export class ViewerEngine {
   private tween: Nullable<Observer<Scene>> = null;
   private storeyOrder: string[] = [];
   fps = 0;
+  /** doors & windows that open */
+  openings: OpeningRT[] = [];
+  private openingByElement = new Map<string, OpeningRT>();
+  private leafMeshes: Mesh[] = [];
+  /** the door/window you are looking at and close enough to use (walk mode) */
+  focusOpening: OpeningRT | null = null;
+  /** storeys you can stand on, low → high */
+  walkStoreys: ModelData['storeys'] = [];
+  private keys = new Set<string>();
+  private vel = new Vector3();
+  private frame = 0;
 
   /** building bounds (site/terrain excluded) used for framing */
   focus: ModelData['bbox'];
@@ -93,6 +119,12 @@ export class ViewerEngine {
     this.scene.collisionsEnabled = true;
     this.mats = new MaterialLibrary(this.scene, PRESETS[quality].texSize);
     this.storeyOrder = [...model.storeys].sort((a, b) => a.elevation - b.elevation).map((s) => s.name);
+    const sorted = [...model.storeys].sort((a, b) => a.elevation - b.elevation);
+    // floors you can walk around on: they have walls or stairs (not foundations or bare roof levels)
+    const has = (st: { name: string }, re: RegExp) => model.elements.some((e) => e.storey === st.name && re.test(e.type));
+    const walkable = sorted.filter((st) => has(st, /Wall|Stair/i) && !/fdn|found|footing/i.test(st.name));
+    const floors = sorted.filter((st) => has(st, /Slab|Wall|Floor|Covering|Stair/i));
+    this.walkStoreys = walkable.length ? walkable : floors.length ? floors : sorted;
 
     this.setupEnvironment();
     this.buildMeshes();
@@ -107,8 +139,38 @@ export class ViewerEngine {
     });
     this.onResize = () => this.engine.resize();
     window.addEventListener('resize', this.onResize);
+    this.onKey = (e: KeyboardEvent) => this.handleKey(e);
+    this.onBlur = () => this.keys.clear();
+    window.addEventListener('keydown', this.onKey);
+    window.addEventListener('keyup', this.onKey);
+    window.addEventListener('blur', this.onBlur);
   }
   private onResize: () => void;
+  private onKey: (e: KeyboardEvent) => void;
+  private onBlur: () => void;
+  /** called when you press E/F; return true if handled (the UI shows feedback) */
+  onInteract: ((o: OpeningRT | null) => void) | null = null;
+
+  // ---- keyboard (game-style: WASD/arrows, Shift to run, E or F to open/close) -----------
+  private handleKey(e: KeyboardEvent) {
+    const t = e.target as HTMLElement | null;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const down = e.type === 'keydown';
+    const code = e.code;
+    const MOVE = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight'];
+    if (MOVE.includes(code)) {
+      if (down) this.keys.add(code); else this.keys.delete(code);
+      if (this.mode === 'walk' && code.startsWith('Arrow')) e.preventDefault();
+      return;
+    }
+    if (down && !e.repeat && (code === 'KeyE' || code === 'KeyF') && this.mode === 'walk' && !this.frozen) {
+      this.updateFocus();
+      const o = this.focusOpening;
+      if (o) this.toggleOpening(o);
+      this.onInteract?.(o);
+    }
+  }
 
   // ---- scene setup -------------------------------------------------------------
   private setupEnvironment() {
@@ -148,8 +210,10 @@ export class ViewerEngine {
     this.groundY = (st ? st.elevation : m.bbox.min[1]) - 0.03;
     const groups = new Map<string, Mesh[]>();
     const texById = new Map((m.textures ?? []).map((t) => [t.id, t]));
-    for (const e of m.elements) {
-      this.elements.set(e.id, e);
+    for (const e of m.elements) this.elements.set(e.id, e);
+    let split: ReturnType<typeof extractOpenings> = { statics: m.elements, openings: [] };
+    try { split = extractOpenings(m); } catch (err) { console.warn('door/window detection failed', err); }
+    for (const e of split.statics) {
       const mesh = new Mesh(`el-${e.id}`, s);
       const vd = new VertexData();
       vd.positions = e.positions;
@@ -181,6 +245,7 @@ export class ViewerEngine {
       merged.freezeWorldMatrix();
       this.renderMeshes.push(merged);
     }
+    this.buildOpenings(split.openings, texById);
     // Ground & site
     const ground = new Mesh('ground', s);
     const G = 400, y = this.groundY;
@@ -195,6 +260,154 @@ export class ViewerEngine {
     ground.metadata = { ground: true };
     ground.freezeWorldMatrix();
     this.pickMeshes.push(ground);
+  }
+
+  /** Separate, animatable meshes for each door/window leaf, pivoting about its hinge. */
+  private buildOpenings(list: Opening[], texById: Map<string, NonNullable<ModelData['textures']>[number]>) {
+    const s = this.scene;
+    for (const o of list) {
+      const rt: OpeningRT = { ...o, open: false, t: 0, leaves: [] };
+      for (const [li, leaf] of o.leaves.entries()) {
+        const m = leaf.motion;
+        let base: Vector3;
+        if (m.type === 'rotate') base = Vector3.FromArray(m.pivot);
+        else {
+          let x = 0, y = 0, z = 0, n = 0;
+          for (const p of leaf.parts) for (let i = 0; i < p.positions.length; i += 3) { x += p.positions[i]; y += p.positions[i + 1]; z += p.positions[i + 2]; n++; }
+          base = new Vector3(x / n, y / n, z / n);
+        }
+        const node = new TransformNode(`opening-${o.id}-${li}`, s);
+        node.position = base.clone();
+        node.rotationQuaternion = Quaternion.Identity();
+        const meshes: Mesh[] = [];
+        for (const part of leaf.parts) {
+          const mesh = new Mesh(`leaf-${part.id}`, s);
+          const pos = new Float32Array(part.positions.length);
+          for (let i = 0; i < pos.length; i += 3) { pos[i] = part.positions[i] - base.x; pos[i + 1] = part.positions[i + 1] - base.y; pos[i + 2] = part.positions[i + 2] - base.z; }
+          const vd = new VertexData();
+          vd.positions = pos;
+          vd.normals = part.normals;
+          vd.indices = part.indices;
+          vd.uvs = part.uvs && part.uvs.length === (part.positions.length / 3) * 2 ? part.uvs : boxUVs(part.positions, part.normals);
+          vd.applyToMesh(mesh, false);
+          const tex = part.texture ? texById.get(part.texture) : undefined;
+          mesh.material = tex ? this.mats.getTextured(tex, part.material, !!part.uvs, part.color) : this.mats.get(part.material, part.color);
+          mesh.parent = node;
+          mesh.metadata = { elementId: part.id, openingId: o.id };
+          mesh.receiveShadows = true;
+          mesh.checkCollisions = o.kind === 'door' && part.material !== 'glass';
+          meshes.push(mesh);
+          this.pickMeshes.push(mesh);
+          this.leafMeshes.push(mesh);
+          this.openingByElement.set(part.id, rt);
+        }
+        // which way round to rotate so the free edge goes the right way
+        let sign = 1;
+        if (m.type === 'rotate' && m.toward) sign = this.rotateSign(m, Vector3.FromArray(m.toward));
+        rt.leaves.push({ node, motion: m, base, sign, meshes });
+      }
+      this.openings.push(rt);
+    }
+    // frames of operable doors/windows also count as "the door" when you look at them
+    for (const o of this.openings) {
+      const ex = this.model.elements.find((e) => this.openingByElement.get(e.id) === o)?.expressId;
+      if (ex === undefined) continue;
+      for (const e of this.model.elements) if (e.expressId === ex && !this.openingByElement.has(e.id)) this.openingByElement.set(e.id, o);
+    }
+  }
+
+  private rotateSign(m: Extract<Motion, { type: 'rotate' }>, toward: Vector3): number {
+    const pivot = Vector3.FromArray(m.pivot), probe = Vector3.FromArray(m.probe).subtract(pivot);
+    const q = Quaternion.RotationAxis(Vector3.FromArray(m.axis), Math.min(m.angle, Math.PI / 2));
+    const moved = probe.rotateByQuaternionToRef(q, new Vector3()).subtract(probe);
+    return Vector3.Dot(moved, toward) >= 0 ? 1 : -1;
+  }
+
+  /** Open or close a door/window (animated). */
+  toggleOpening(o: OpeningRT, open = !o.open) {
+    if (open && !o.open) {
+      // doors that swing both ways (or whose direction the model doesn't give) swing away from you
+      const cam = this.scene.activeCamera!.position;
+      const away = Vector3.Dot(cam.subtract(Vector3.FromArray(o.center)), new Vector3(o.ay[0], 0, o.ay[1])) > 0 ? -1 : 1;
+      const toward = new Vector3(o.ay[0] * away, 0, o.ay[1] * away);
+      for (const l of o.leaves) if (l.motion.type === 'rotate' && !l.motion.toward) l.sign = this.rotateSign(l.motion, toward);
+    }
+    o.open = open;
+    // a moving or open leaf never blocks you
+    for (const l of o.leaves) for (const m of l.meshes) m.checkCollisions = false;
+  }
+
+  /** Open/close every door (and optionally window) at once, e.g. for a design preview. */
+  setAllOpen(open: boolean, kinds: OpeningRT['kind'][] = ['door'], animate = true) {
+    for (const o of this.openings) {
+      if (!kinds.includes(o.kind)) continue;
+      this.toggleOpening(o, open);
+      if (!animate) { o.t = open ? 1 : 0; this.poseOpening(o); this.settleOpening(o); }
+    }
+  }
+
+  private poseOpening(o: OpeningRT) {
+    const k = o.t, e = k * k * (3 - 2 * k); // smoothstep
+    for (const l of o.leaves) {
+      if (l.motion.type === 'rotate') {
+        Quaternion.RotationAxisToRef(Vector3.FromArray(l.motion.axis), l.sign * l.motion.angle * e, l.node.rotationQuaternion!);
+      } else {
+        const off = l.motion.offset;
+        l.node.position.set(l.base.x + off[0] * e, l.base.y + off[1] * e, l.base.z + off[2] * e);
+      }
+    }
+  }
+
+  private settleOpening(o: OpeningRT) {
+    if (o.t === 0 && !o.open) for (const l of o.leaves) for (const m of l.meshes) {
+      m.checkCollisions = o.kind === 'door' && (this.elements.get(m.metadata.elementId)?.material ?? 'glass') !== 'glass';
+    }
+  }
+
+  private animateOpenings(dt: number) {
+    for (const o of this.openings) {
+      const target = o.open ? 1 : 0;
+      if (o.t === target) continue;
+      const dur = o.kind === 'door' ? 0.75 : 0.6;
+      o.t = target > o.t ? Math.min(1, o.t + dt / dur) : Math.max(0, o.t - dt / dur);
+      this.poseOpening(o);
+      if (o.t === target) this.settleOpening(o);
+    }
+  }
+
+  /** The door/window under the crosshair (or right in front of you) within reach. */
+  updateFocus() {
+    if (this.mode !== 'walk' || this.frozen || !this.openings.length) { this.focusOpening = null; return; }
+    const cam = this.walkCam;
+    const fwd = cam.getTarget().subtract(cam.position).normalize();
+    const hit = this.scene.pickWithRay(new Ray(cam.position, fwd, REACH), (m) => this.pickMeshes.includes(m as Mesh) && m.isEnabled() && !m.metadata?.ground);
+    let found: OpeningRT | null = null;
+    if (hit?.hit && hit.pickedMesh) found = this.openingByElement.get(hit.pickedMesh.metadata?.elementId) ?? null;
+    if (!found) {
+      // nothing exactly under the crosshair: nearest one roughly ahead of you
+      let best = Infinity;
+      const f2 = new Vector3(fwd.x, 0, fwd.z).normalize();
+      for (const o of this.openings) {
+        const d = new Vector3(o.center[0] - cam.position.x, 0, o.center[2] - cam.position.z);
+        const dist = d.length();
+        if (dist > 2.4 || Math.abs(o.center[1] - cam.position.y) > 2) continue;
+        if (!this.isOpeningVisible(o)) continue;
+        if (dist > 0.4 && Vector3.Dot(d.scale(1 / dist), f2) < 0.55) continue;
+        if (dist < best) { best = dist; found = o; }
+      }
+    }
+    this.focusOpening = found;
+  }
+
+  private isOpeningVisible(o: OpeningRT) {
+    return o.leaves.some((l) => l.meshes.some((m) => m.isEnabled()));
+  }
+
+  /** Door/window at a screen point (tap), if within a few metres. */
+  openingAt(x: number, y: number): OpeningRT | null {
+    const r = this.scene.pick(x, y, (m) => this.pickMeshes.includes(m as Mesh) && m.isEnabled());
+    if (!r?.hit || !r.pickedMesh || r.distance > REACH + 2) return null;
+    return this.openingByElement.get(r.pickedMesh.metadata?.elementId) ?? null;
   }
 
   get center(): Vector3 {
@@ -217,21 +430,15 @@ export class ViewerEngine {
     this.walkCam.minZ = 0.05;
     this.walkCam.maxZ = 3000;
     this.walkCam.fov = 1.05;
-    this.walkCam.speed = 0.09;
-    this.walkCam.inertia = 0.6;
-    this.walkCam.angularSensibility = 2500;
+    this.walkCam.speed = 1;
+    // we move the camera ourselves (game-style velocity); raw mouse look
+    this.walkCam.inertia = 0;
+    this.walkCam.angularSensibility = 900;
     this.walkCam.checkCollisions = true;
     this.walkCam.applyGravity = false;
     this.walkCam.ellipsoid = new Vector3(0.25, 0.6, 0.25);
-    this.walkCam.keysUp = [87, 38];
-    this.walkCam.keysDown = [83, 40];
-    this.walkCam.keysLeft = [65, 37];
-    this.walkCam.keysRight = [68, 39];
-    this.walkCam.keysUpward = [];
-    this.walkCam.keysDownward = [];
-    this.walkCam.keysRotateLeft = [81];
-    this.walkCam.keysRotateRight = [69];
-    // We handle touch ourselves (joystick + drag-to-look)
+    // We handle keys (WASD, arrows, Shift, E) and touch (joystick + drag-to-look) ourselves
+    this.walkCam.inputs.removeByType('FreeCameraKeyboardMoveInput');
     this.walkCam.inputs.removeByType('FreeCameraTouchInput');
 
     this.orbitCam = new ArcRotateCamera('orbit', -Math.PI / 3, 1.0, this.size * 1.6, c.clone(), s);
@@ -258,6 +465,8 @@ export class ViewerEngine {
   setFrozen(f: boolean) {
     this.frozen = f;
     this.move = { x: 0, y: 0 };
+    this.keys.clear();
+    this.vel.setAll(0);
     if (f) this.scene.activeCamera?.detachControl();
     else this.scene.activeCamera?.attachControl(true);
     if (f && document.pointerLockElement) document.exitPointerLock();
@@ -282,6 +491,7 @@ export class ViewerEngine {
     csm.normalBias = 0.02;
     csm.darkness = 0.15;
     for (const m of this.renderMeshes) if (!/glass/.test(m.name)) csm.addShadowCaster(m, false);
+    for (const m of this.leafMeshes) if ((this.elements.get(m.metadata.elementId)?.material ?? 'glass') !== 'glass') csm.addShadowCaster(m, false);
     this.shadows = csm;
     this.rebuildPipeline();
   }
@@ -370,28 +580,45 @@ export class ViewerEngine {
     }
   }
 
-  // ---- per-frame: joystick movement + ground following (stairs, gravity) ----------
+  // ---- per-frame: game-style movement + ground following (stairs, gravity) --------
   private fallSpeed = 0;
   private walkTarget: Vector3 | null = null;
   private tick() {
+    const dt = Math.min(0.05, this.engine.getDeltaTime() / 1000);
+    this.animateOpenings(dt);
     if (this.mode !== 'walk') return;
     const cam = this.walkCam;
-    const dt = Math.min(0.05, this.engine.getDeltaTime() / 1000);
-    if (!this.frozen && (this.move.x || this.move.y)) {
-      const fwd = cam.getTarget().subtract(cam.position);
-      fwd.y = 0; fwd.normalize();
-      const right = Vector3.Cross(fwd, Vector3.Up()); // right-handed: forward × up = right
-      const v = fwd.scale(this.move.y).add(right.scale(this.move.x)).scale(0.9 * dt);
-      cam.cameraDirection.addInPlace(v);
-      this.walkTarget = null;
-    }
-    if (this.walkTarget && !this.frozen) {
+    const k = this.keys;
+    // input: x = strafe right, y = forward (keyboard + joystick)
+    let ix = this.move.x, iy = this.move.y;
+    if (!this.frozen) {
+      if (k.has('KeyW') || k.has('ArrowUp')) iy += 1;
+      if (k.has('KeyS') || k.has('ArrowDown')) iy -= 1;
+      if (k.has('KeyD')) ix += 1;
+      if (k.has('KeyA')) ix -= 1;
+      if (k.has('ArrowLeft')) cam.rotation.y -= TURN_SPEED * dt;
+      if (k.has('ArrowRight')) cam.rotation.y += TURN_SPEED * dt;
+    } else { ix = 0; iy = 0; }
+    const mag = Math.hypot(ix, iy);
+    if (mag > 1) { ix /= mag; iy /= mag; }
+    const run = k.has('ShiftLeft') || k.has('ShiftRight');
+    const fwd = cam.getTarget().subtract(cam.position).normalize();
+    fwd.y = 0; fwd.normalize();
+    const right = Vector3.Cross(fwd, Vector3.Up()); // right-handed: forward × up = right
+    const want = fwd.scale(iy).addInPlace(right.scale(ix)).scaleInPlace(run ? RUN_SPEED : WALK_SPEED);
+    if (mag > 0.01) this.walkTarget = null;
+    else if (this.walkTarget && !this.frozen) {
       const d = this.walkTarget.subtract(cam.position);
       d.y = 0;
       const len = d.length();
-      if (len < 0.15) this.walkTarget = null;
-      else cam.cameraDirection.addInPlace(d.normalize().scale(Math.min(len * 0.4, 1.1 * dt)));
+      if (len < 0.12) this.walkTarget = null;
+      else want.copyFrom(d.scaleInPlace(Math.min(WALK_SPEED, len * 4) / len));
     }
+    // quick acceleration / braking, like a game character
+    const a = 1 - Math.exp(-dt * (want.lengthSquared() > 0.01 ? 12 : 16));
+    this.vel.addInPlace(want.subtract(this.vel).scaleInPlace(a));
+    if (this.vel.lengthSquared() < 1e-4) this.vel.setAll(0);
+    else cam.cameraDirection.addInPlace(this.vel.scale(dt));
     // ground follow: ray from knee height downwards
     const origin = cam.position.subtract(new Vector3(0, EYE - 0.45, 0));
     const hit = this.scene.pickWithRay(new Ray(origin, new Vector3(0, -1, 0), 6), (m) => m.checkCollisions && m.isEnabled());
@@ -402,6 +629,83 @@ export class ViewerEngine {
       else if (diff < -0.01) { this.fallSpeed = Math.min(12, this.fallSpeed + 9.8 * dt); cam.position.y = Math.max(target, cam.position.y - this.fallSpeed * dt); }
       else this.fallSpeed = 0;
     }
+    if (++this.frame % 6 === 0) this.updateFocus();
+  }
+
+  // ---- floors & quick travel (minimap) -------------------------------------------------
+  /** Index into walkStoreys of the floor at height y (camera height). */
+  storeyIndexAt(y: number): number {
+    let idx = 0;
+    this.walkStoreys.forEach((st, i) => { if (st.elevation <= y - 1.0) idx = i; });
+    return idx;
+  }
+
+  /** A spot you can stand on at (x, z) on a storey: eye position, or null if there's no floor there. */
+  findSpot(x: number, z: number, storeyIdx: number): Vector3 | null {
+    const st = this.walkStoreys[storeyIdx];
+    if (!st) return null;
+    const isFloor = (m: AbstractMesh) => m.checkCollisions && m.isEnabled();
+    const top = st.elevation + 1.3;
+    const down = this.scene.pickWithRay(new Ray(new Vector3(x, top, z), new Vector3(0, -1, 0), 2.2), isFloor);
+    let y: number | null = null;
+    if (down?.hit && down.pickedPoint && Math.abs(down.pickedPoint.y - st.elevation) < 0.9) y = down.pickedPoint.y;
+    else if (storeyIdx === 0 || st.elevation <= this.groundY + 0.6) y = this.groundY;
+    if (y === null) return null;
+    // keep clear of walls
+    const p = new Vector3(x, y + 1.0, z);
+    const walls = (m: AbstractMesh) => m.checkCollisions && m.isEnabled() && !m.metadata?.ground;
+    for (let pass = 0; pass < 2; pass++) for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2, d = new Vector3(Math.cos(a), 0, Math.sin(a));
+      const h = this.scene.pickWithRay(new Ray(p, d, 0.4), walls);
+      if (h?.hit) p.subtractInPlace(d.scale(0.4 - h.distance));
+    }
+    return new Vector3(p.x, y + EYE, p.z);
+  }
+
+  /** Jump (or glide) to a point on the plan, keeping the view direction. */
+  travelTo(x: number, z: number, storeyIdx: number, glide = true): boolean {
+    let spot = this.findSpot(x, z, storeyIdx);
+    if (!spot) spot = this.nearestSpot(x, z, storeyIdx);
+    if (!spot) return false;
+    this.walkTarget = null;
+    this.vel.setAll(0);
+    if (this.mode !== 'walk') this.setMode('walk');
+    const cam = this.walkCam;
+    const dir = cam.getTarget().subtract(cam.position).normalize();
+    if (!glide) {
+      this.cancelTween();
+      cam.position.copyFrom(spot);
+      this.fallSpeed = 0;
+      return true;
+    }
+    const dist = Vector3.Distance(cam.position, spot);
+    const tgt = spot.add(dir.scale(3));
+    this.flyTo({ position: [spot.x, spot.y, spot.z], target: [tgt.x, tgt.y, tgt.z], mode: 'walk' }, Math.min(900, 250 + dist * 40));
+    return true;
+  }
+
+  /** Closest standable spot on a storey to (x, z), searching outwards. */
+  nearestSpot(x: number, z: number, storeyIdx: number): Vector3 | null {
+    for (let r = 0.75; r <= 12; r += 0.75) {
+      for (let i = 0; i < 16; i++) {
+        const a = (i / 16) * Math.PI * 2;
+        const s = this.findSpot(x + Math.cos(a) * r, z + Math.sin(a) * r, storeyIdx);
+        if (s) return s;
+      }
+    }
+    return null;
+  }
+
+  /** Go up/down to another floor, at the same place on the plan when possible. */
+  goToStorey(idx: number): boolean {
+    if (idx < 0 || idx >= this.walkStoreys.length) return false;
+    const p = this.mode === 'walk' ? this.walkCam.position : this.center;
+    if (this.travelTo(p.x, p.z, idx)) return true;
+    return this.goInside(this.walkStoreys[idx].name);
+  }
+
+  private cancelTween() {
+    if (this.tween) { this.scene.onBeforeRenderObservable.remove(this.tween); this.tween = null; }
   }
 
   walkTo(p: Vector3) { this.walkTarget = p.clone(); }
@@ -568,6 +872,9 @@ export class ViewerEngine {
 
   dispose() {
     window.removeEventListener('resize', this.onResize);
+    window.removeEventListener('keydown', this.onKey);
+    window.removeEventListener('keyup', this.onKey);
+    window.removeEventListener('blur', this.onBlur);
     this.mats.dispose();
     this.engine.stopRenderLoop();
     this.scene.dispose();
