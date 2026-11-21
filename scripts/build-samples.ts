@@ -53,11 +53,11 @@ export function modelToGlb(model: ModelData): Buffer {
     accessors.push({ bufferView: vi, componentType: 5125, count: e.indices.length, type: 'SCALAR' });
     const a = accessors.length;
     meshes.push({ name: e.name, primitives: [{ attributes: { POSITION: a - 3, NORMAL: a - 2 }, indices: a - 1, material: matIndex.get(e.material) }] });
-    nodes.push({ name: `${e.storey} / ${e.name}`, mesh: meshes.length - 1, extras: { storey: e.storey, storeyElevation: storeyElev.get(e.storey), type: e.type, material: e.material, name: e.name, props: e.props } });
+    nodes.push({ name: `${e.storey} / ${e.name}`, mesh: meshes.length - 1, extras: { storey: e.storey, storeyElevation: storeyElev.get(e.storey), type: e.type, material: e.material, name: e.name, props: e.props, operation: e.operation, axes: e.axes, openingRole: e.openingRole, openingGroup: e.openingGroup } });
   }
   const bin = Buffer.concat(chunks);
   const json = {
-    asset: { version: '2.0', generator: 'atelier-linea sample baker' },
+    asset: { version: '2.0', generator: 'architect-tool-poc sample baker' },
     scene: 0, scenes: [{ nodes: nodes.map((_, i) => i) }], nodes, meshes, materials, accessors, bufferViews,
     buffers: [{ byteLength: bin.length }],
   };
@@ -96,13 +96,13 @@ const wallMid: [number, number] = [(ext.a[0] + ext.b[0]) / 2, (ext.a[1] + ext.b[
 const comments: Comment[] = [
   mk('ex-c1', { elementId: living.id, elementKind: 'room', local: [0.4, 0.2], elementLabel: living.name, floor: 0, position: [at(living)[0] + 0.4, 0, at(living)[1] + 0.2] },
     'Love this size for the living room. Can it open to the garden with big sliding doors?', 'like', 'Priya (client)', 'client', '2026-11-18T09:20:00.000Z', 'open',
-    [{ id: 'ex-r1', projectId: pid, source: 'design-workspace', anchor: { position: [0, 0, 0] }, text: 'Yes — we will show a 3.6 m stacking slider on the north side.', author: 'Atelier Linea', role: 'architect', createdAt: '2026-11-18T13:00:00.000Z', status: 'open', replies: [] }]),
+    [{ id: 'ex-r1', projectId: pid, source: 'design-workspace', anchor: { position: [0, 0, 0] }, text: 'Yes — we will show a 3.6 m stacking slider on the north side.', author: 'Architect Tool POC', role: 'architect', createdAt: '2026-11-18T13:00:00.000Z', status: 'open', replies: [] }]),
   mk('ex-c2', { elementId: master.id, elementKind: 'room', local: [-0.5, 0.3], elementLabel: master.name, floor: 0, position: [at(master)[0] - 0.5, 0, at(master)[1] + 0.3] },
     'Could the main bedroom be a little wider so a king bed fits with bedside tables?', 'change', 'Sam (client)', 'client', '2026-11-18T09:31:00.000Z'),
   mk('ex-c3', { elementId: ext.id, elementKind: 'wall', local: [0.5, -0.4], elementLabel: 'Outside wall', floor: 0, position: [wallMid[0], 0, wallMid[1]] },
     'Which way is north? We would like morning sun in the kitchen.', 'question', 'Priya (client)', 'client', '2026-11-18T10:02:00.000Z'),
   mk('ex-c4', { elementId: garage.id, elementKind: 'room', local: [0, 0], elementLabel: garage.name, floor: 0, position: [at(garage)[0], 0, at(garage)[1]] },
-    'Garage fits two cars side by side with 600 mm storage at the back.', 'like', 'Atelier Linea', 'architect', '2026-11-18T12:45:00.000Z', 'resolved'),
+    'Garage fits two cars side by side with 600 mm storage at the back.', 'like', 'Architect Tool POC', 'architect', '2026-11-18T12:45:00.000Z', 'resolved'),
 ];
 const bundle = { kind: 'atelier-linea/design-bundle', version: 1, exportedAt: '2026-11-18T13:05:00.000Z', plan: ex, comments, requirements: ex.requirements };
 fs.writeFileSync('public/samples/example-design-bundle.json', JSON.stringify(bundle, null, 1));

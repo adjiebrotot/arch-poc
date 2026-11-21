@@ -33,9 +33,9 @@
 <a href="#main" class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[70] btn btn-primary">Skip to content</a>
 <header class="sticky top-0 z-40 bg-paper/90 backdrop-blur border-b border-line safe-t">
   <div class="mx-auto max-w-6xl px-4 h-14 flex items-center gap-3">
-    <a href={href('/')} class="flex items-center gap-2 font-semibold tracking-tight shrink-0" aria-label="Atelier Linea home">
+    <a href={href('/')} class="flex items-center gap-2 font-semibold tracking-tight shrink-0" aria-label="Architect Tool POC home">
       <svg viewBox="0 0 64 64" class="w-7 h-7" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#1F2326"/><path d="M14 46V26l18-12 18 12v20" fill="none" stroke="#F7F5F1" stroke-width="4" stroke-linejoin="round"/><path d="M26 46V34h12v12" fill="none" stroke="#C8673F" stroke-width="4"/></svg>
-      <span class="hidden sm:inline">Atelier Linea</span>
+      <span class="hidden sm:inline">Architect Tool POC</span>
     </a>
     <nav class="flex-1 flex items-center gap-1 overflow-x-auto text-sm" aria-label="Main">
       {#each nav as n}

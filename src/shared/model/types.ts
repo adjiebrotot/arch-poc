@@ -24,6 +24,17 @@ export interface ModelElement {
   texture?: string;
   /** explicit texture coordinates (IfcIndexedTriangleTextureMap / glTF); otherwise box-mapped */
   uvs?: Float32Array;
+  /**
+   * Doors/windows: how it opens, as the IFC enum text (SINGLE_SWING_LEFT, SLIDING_TO_RIGHT,
+   * DOUBLE_DOOR_SINGLE_SWING, SIDEHUNGLEFTHAND, TOPHUNG, FIXEDCASEMENT…).
+   */
+  operation?: string;
+  /** Doors/windows: world unit vectors of the local X (width) and Y (swing side) axes. */
+  axes?: [number, number, number, number, number, number];
+  /** Doors/windows split into explicit parts (generated plans): moving leaf vs fixed frame. */
+  openingRole?: 'leaf' | 'frame';
+  /** Parts sharing this key belong to one door/window (defaults to expressId). */
+  openingGroup?: string;
 }
 
 /** An image texture carried by the model (IFC IfcImageTexture/IfcBlobTexture/IfcPixelTexture). */

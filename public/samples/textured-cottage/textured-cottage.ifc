@@ -5,10 +5,10 @@ FILE_NAME('','2026-11-20T09:24:40',(''),(''),'IfcOpenShell 0.9.0post1+b5e509b','
 FILE_SCHEMA(('IFC4'));
 ENDSEC;
 DATA;
-#1=IFCPERSON($,$,'Atelier Linea',$,$,$,$,$);
-#2=IFCORGANIZATION($,'Atelier Linea',$,$,$);
+#1=IFCPERSON($,$,'Architect Tool POC',$,$,$,$,$);
+#2=IFCORGANIZATION($,'Architect Tool POC',$,$,$);
 #3=IFCPERSONANDORGANIZATION(#1,#2,$);
-#4=IFCORGANIZATION($,'Atelier Linea',$,$,$);
+#4=IFCORGANIZATION($,'Architect Tool POC',$,$,$);
 #5=IFCAPPLICATION(#4,'1.0','Textured test model','linea-tex');
 #6=IFCOWNERHISTORY(#3,#5,$,.ADDED.,$,$,$,0);
 #7=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);

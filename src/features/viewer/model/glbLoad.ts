@@ -64,6 +64,10 @@ export async function loadGlb(data: ArrayBuffer, name: string, onProgress?: (p: 
         color: col ? [col.r, col.g, col.b, 1] : [0.85, 0.83, 0.8, 1],
         positions, normals, indices,
         props: (extras.props as ModelElement['props']) ?? undefined,
+        ...(typeof extras.operation === 'string' ? { operation: extras.operation } : {}),
+        ...(Array.isArray(extras.axes) && extras.axes.length === 6 ? { axes: extras.axes as ModelElement['axes'] } : {}),
+        ...(extras.openingRole === 'leaf' || extras.openingRole === 'frame' ? { openingRole: extras.openingRole } : {}),
+        ...(typeof extras.openingGroup === 'string' ? { openingGroup: extras.openingGroup } : {}),
       });
     }
     const storeys = [...storeySet.entries()].map(([n, y]) => ({ name: n, elevation: (n === 'Ground floor' ? Math.max(0, y) : y) })).sort((a, b) => a.elevation - b.elevation);

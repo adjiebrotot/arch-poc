@@ -95,7 +95,7 @@ export async function loadModel(opts: {
   fetchBytes: () => Promise<ArrayBuffer>; versionId?: string; versionLabel?: string; previousVersion?: string;
   resolveAsset?: AssetResolver;
 }): Promise<LoadedModel> {
-  const key = `model:v5:${opts.cacheKey}:${opts.simplified ? 'lite' : 'full'}`;
+  const key = `model:v6:${opts.cacheKey}:${opts.simplified ? 'lite' : 'full'}`;
   loading.set({ active: true, progress: 0.02, message: 'Checking saved copy…' });
   try {
     let model = await storage.getCache<ModelData>(key);

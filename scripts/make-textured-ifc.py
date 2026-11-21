@@ -35,8 +35,8 @@ D3 = lambda *c: f.createIfcDirection([float(x) for x in c])
 def A3(o=(0, 0, 0), z=(0, 0, 1), x=(1, 0, 0)): return f.createIfcAxis2Placement3D(P3(*o), D3(*z), D3(*x))
 def place(o=(0, 0, 0), rel=None, z=(0, 0, 1), x=(1, 0, 0)): return f.createIfcLocalPlacement(rel, A3(o, z, x))
 
-owner = f.createIfcOwnerHistory(f.createIfcPersonAndOrganization(f.createIfcPerson(None, None, 'Atelier Linea'), f.createIfcOrganization(None, 'Atelier Linea')),
-                                f.createIfcApplication(f.createIfcOrganization(None, 'Atelier Linea'), '1.0', 'Textured test model', 'linea-tex'), None, 'ADDED', None, None, None, 0)
+owner = f.createIfcOwnerHistory(f.createIfcPersonAndOrganization(f.createIfcPerson(None, None, 'Architect Tool POC'), f.createIfcOrganization(None, 'Architect Tool POC')),
+                                f.createIfcApplication(f.createIfcOrganization(None, 'Architect Tool POC'), '1.0', 'Textured test model', 'linea-tex'), None, 'ADDED', None, None, None, 0)
 units = f.createIfcUnitAssignment([f.createIfcSIUnit(None, 'LENGTHUNIT', None, 'METRE'), f.createIfcSIUnit(None, 'AREAUNIT', None, 'SQUARE_METRE'),
                                    f.createIfcSIUnit(None, 'PLANEANGLEUNIT', None, 'RADIAN')])
 ctx = f.createIfcGeometricRepresentationContext(None, 'Model', 3, 1e-5, A3(), None)

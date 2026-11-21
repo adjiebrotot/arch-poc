@@ -3,7 +3,7 @@
 </script>
 
 <section class="pt-10 md:pt-20 pb-10 grid gap-5 max-w-3xl">
-  <p class="eyebrow">Atelier Linea · Residential architecture</p>
+  <p class="eyebrow">Architect Tool POC · Residential architecture</p>
   <h1 class="text-4xl md:text-6xl font-semibold tracking-tight leading-[1.05]">Your home, designed together.</h1>
   <p class="text-lg text-ink-2 max-w-2xl">
     You know how you want to live. We know how to build it. Sketch a rough layout, pick a starting point or simply tell us

@@ -202,7 +202,7 @@
     ctx.font = `600 ${16 * k}px Inter Variable, sans-serif`;
     ctx.fillText(`${$current?.title ?? ''} — ${drawing.label}${drawing.perStorey ? ` · ${storey}` : ''}`, 20 * k, tb + (out.height - tb) * 0.45);
     ctx.font = `${12 * k}px Inter Variable, sans-serif`;
-    ctx.fillText(`Atelier Linea · ${$current?.versionLabel ?? 'Working model'} · ${new Date().toLocaleDateString()} · ${WATERMARK_TEXT}`, 20 * k, tb + (out.height - tb) * 0.78);
+    ctx.fillText(`Architect Tool POC · ${$current?.versionLabel ?? 'Working model'} · ${new Date().toLocaleDateString()} · ${WATERMARK_TEXT}`, 20 * k, tb + (out.height - tb) * 0.78);
     if (watermarkOn || $role === 'client') drawWatermark(ctx, out.width, out.height, k);
     return out;
   }
