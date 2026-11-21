@@ -55,4 +55,5 @@ images together with the `.ifc`; missing images are listed on the model card and
 * **No storeys** (IFC4.3 infrastructure): a single “Model” level is created.
 * **Green ≠ grass**: only site-like elements get the grass material. Other green elements (e.g. carpet) keep their own colour.
 * **Large models in 2D**: edges use Babylon's fast edge finder (O(n log n)), and meshes over 20k triangles skip edges. The dental clinic plan went from hanging the tab to ~3.4 s.
+* **Inside-out faces** (e.g. the Revit beds in the duplex, whose mattress came out with inverted orientation): model materials are now drawn double-sided with two-sided lighting, so these parts no longer vanish and leave legs and rails floating in the room.
 * **“Go inside”** tries every storey (nearest ground level first) and tolerates floor finishes above the structural level.

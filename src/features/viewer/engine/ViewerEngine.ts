@@ -2,7 +2,7 @@ import {
   Engine, Scene, Color3, Color4, Vector3, Mesh, VertexData, DirectionalLight, HemisphericLight, CascadedShadowGenerator,
   DefaultRenderingPipeline, SSAO2RenderingPipeline, SSRRenderingPipeline, ImageProcessingConfiguration, CubeTexture,
   UniversalCamera, ArcRotateCamera, Ray, MeshBuilder, DynamicTexture, StandardMaterial, Matrix, type AbstractMesh,
-  type Observer, type Nullable, type Camera, PBRMaterial, Texture, Material, TransformNode, Quaternion,
+  type Observer, type Nullable, type Camera, PBRMaterial, Texture, Material, TransformNode, Quaternion, Plane, type PickingInfo,
 } from '@babylonjs/core';
 import { SkyMaterial } from '@babylonjs/materials/sky/skyMaterial';
 import type { ModelData, ModelElement } from '@shared/model/types';
@@ -43,6 +43,8 @@ export const WALK_SPEED = 4.3;
 export const RUN_SPEED = 7.5;
 const TURN_SPEED = 2.2; // rad/s for the arrow keys
 const REACH = 3.2; // how far away you can open a door (m)
+/** height of the horizontal section cut above a floor, like a plan drawing (m) */
+export const SECTION_CUT = 1.3;
 
 /** A door/window in the scene, with its animation state. */
 export interface OpeningRT extends Omit<Opening, 'leaves'> {
@@ -90,6 +92,10 @@ export class ViewerEngine {
   move = { x: 0, y: 0 };
   hour = 15;
   visibleStoreyMax = Infinity;
+  /** orbit-mode section: index into walkStoreys cut through, or null for the whole closed building */
+  section: number | null = null;
+  /** world height of the section plane (Infinity = no cut) */
+  sectionY = Infinity;
   private tween: Nullable<Observer<Scene>> = null;
   private storeyOrder: string[] = [];
   fps = 0;
@@ -405,7 +411,7 @@ export class ViewerEngine {
 
   /** Door/window at a screen point (tap), if within a few metres. */
   openingAt(x: number, y: number): OpeningRT | null {
-    const r = this.scene.pick(x, y, (m) => this.pickMeshes.includes(m as Mesh) && m.isEnabled());
+    const r = this.pickVisible(x, y, (m) => this.pickMeshes.includes(m as Mesh) && m.isEnabled());
     if (!r?.hit || !r.pickedMesh || r.distance > REACH + 2) return null;
     return this.openingByElement.get(r.pickedMesh.metadata?.elementId) ?? null;
   }
@@ -455,6 +461,8 @@ export class ViewerEngine {
 
   setMode(mode: CamMode) {
     this.mode = mode;
+    // a section is an overview tool: walking always happens in the whole building
+    if (mode === 'walk' && this.section !== null) this.setSection(null, false);
     const cam: Camera = mode === 'walk' ? this.walkCam : this.orbitCam;
     this.scene.activeCamera?.detachControl();
     this.scene.activeCamera = cam;
@@ -578,6 +586,45 @@ export class ViewerEngine {
       if (!e) continue;
       p.setEnabled(this.storeyOrder.indexOf(e.storey) <= this.visibleStoreyMax);
     }
+  }
+
+  /**
+   * Horizontal section through the building, like a 3D floor plan (orbit view).
+   * `idx` is a floor in walkStoreys: everything higher than SECTION_CUT above that floor is cut
+   * away, so you look down into its rooms with the floors below still in place.
+   * null shows the whole, closed building (roof on).
+   */
+  setSection(idx: number | null, reframe = true) {
+    const st = idx === null ? null : this.walkStoreys[idx];
+    this.section = st ? idx : null;
+    this.sectionY = st ? st.elevation + SECTION_CUT : Infinity;
+    // Babylon discards fragments on the positive side: y - cut > 0 → removed
+    this.mats.setClipPlane(st ? new Plane(0, 1, 0, -this.sectionY) : null);
+    for (const m of this.pins.values()) m.setEnabled(this.pinVisible(m.metadata.storey, m.position.y));
+    if (reframe && this.mode === 'orbit') {
+      // orbit around the cut floor (or the whole building), keeping the current viewing angle
+      const c = this.orbitCam;
+      const ty = st ? st.elevation + 0.5 : this.center.y;
+      const dy = ty - c.target.y;
+      if (Math.abs(dy) > 0.05) {
+        const t = c.target.add(new Vector3(0, dy, 0)), p = c.position.add(new Vector3(0, dy, 0));
+        this.flyTo({ position: [p.x, p.y, p.z], target: [t.x, t.y, t.z], mode: 'orbit' }, 450);
+      }
+    }
+  }
+
+  private pinVisible(storey: string | undefined, y: number) {
+    const e = storey ? this.storeyOrder.indexOf(storey) : -1;
+    return (e < 0 || e <= this.visibleStoreyMax) && y <= this.sectionY + 0.4;
+  }
+
+  /** Nearest hit that is not cut away by the section plane. */
+  private pickVisible(x: number, y: number, pred: (m: AbstractMesh) => boolean): PickingInfo | null {
+    if (this.sectionY === Infinity) return this.scene.pick(x, y, pred);
+    const hits = this.scene.multiPick(x, y, pred) ?? [];
+    let best: PickingInfo | null = null;
+    for (const h of hits) if (h.hit && h.pickedPoint && h.pickedPoint.y <= this.sectionY + 1e-3 && (!best || h.distance < best.distance)) best = h;
+    return best;
   }
 
   // ---- per-frame: game-style movement + ground following (stairs, gravity) --------
@@ -754,7 +801,7 @@ export class ViewerEngine {
 
   // ---- picking, snapshots, pins ------------------------------------------------------
   pick(x: number, y: number): PickResult | null {
-    const r = this.scene.pick(x, y, (m) => this.pickMeshes.includes(m as Mesh) && m.isEnabled());
+    const r = this.pickVisible(x, y, (m) => this.pickMeshes.includes(m as Mesh) && m.isEnabled());
     if (!r?.hit || !r.pickedPoint) return null;
     const n = r.getNormal(true, true) ?? Vector3.Up();
     // face the camera
@@ -851,14 +898,13 @@ export class ViewerEngine {
         mat.sideOrientation = Material.CounterClockWiseSideOrientation;
         m.material = mat;
         m.renderingGroupId = 1;
-        m.metadata = { commentId: c.id, key };
+        m.metadata = { commentId: c.id, key, storey: c.anchor.storey };
         const p = Vector3.FromArray(c.anchor.position);
         const n = c.anchor.normal ? Vector3.FromArray(c.anchor.normal) : Vector3.Up();
         m.position = p.add(n.scale(0.05)).add(new Vector3(0, 0.27, 0));
         this.pins.set(c.id, m);
       }
-      const e = c.anchor.storey ? this.storeyOrder.indexOf(c.anchor.storey) : -1;
-      m.setEnabled(e < 0 || e <= this.visibleStoreyMax);
+      m.setEnabled(this.pinVisible(c.anchor.storey, m.position.y));
     }
   }
 
