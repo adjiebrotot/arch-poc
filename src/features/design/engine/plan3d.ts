@@ -7,7 +7,8 @@ import type { PlanSpec, Wall, RoomType } from '@shared/planspec/schema';
 import { ROOM_LABELS } from '@shared/planspec/schema';
 import type { ModelData, ModelElement, MaterialKey } from '@shared/model/types';
 import { computeBBox } from '@shared/model/types';
-import { polygonArea } from '@shared/util/geometry';
+import { polygonArea, triangulate, type Vec2 } from '@shared/util/geometry';
+import { normalizeSite, roadShapes, outwardNormal, edgeOf } from '@shared/planspec/site';
 
 const SLAB = 0.25;
 
@@ -53,48 +54,52 @@ function fixWinding(p: number[], n: number[], idx: number[]) {
   }
 }
 
-/** Ear-clipping triangulation for simple polygons. */
-export function triangulate(poly: [number, number][]): number[] {
-  const n = poly.length;
-  if (n < 3) return [];
-  let area = 0;
-  for (let i = 0; i < n; i++) { const [x1, y1] = poly[i], [x2, y2] = poly[(i + 1) % n]; area += x1 * y2 - x2 * y1; }
-  const idx = [...Array(n).keys()];
-  if (area < 0) idx.reverse();
-  const out: number[] = [];
-  const isEar = (i0: number, i1: number, i2: number, rest: number[]) => {
-    const [ax, ay] = poly[i0], [bx, by] = poly[i1], [cx, cy] = poly[i2];
-    if ((bx - ax) * (cy - ay) - (by - ay) * (cx - ax) <= 1e-12) return false;
-    for (const j of rest) {
-      if (j === i0 || j === i1 || j === i2) continue;
-      const [px, py] = poly[j];
-      const d1 = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
-      const d2 = (cx - bx) * (py - by) - (cy - by) * (px - bx);
-      const d3 = (ax - cx) * (py - cy) - (ay - cy) * (px - cx);
-      if (d1 > 1e-12 && d2 > 1e-12 && d3 > 1e-12) return false;
-    }
-    return true;
-  };
-  let guard = 0;
-  while (idx.length > 3 && guard++ < 5000) {
-    let clipped = false;
-    for (let k = 0; k < idx.length; k++) {
-      const i0 = idx[(k + idx.length - 1) % idx.length], i1 = idx[k], i2 = idx[(k + 1) % idx.length];
-      if (isEar(i0, i1, i2, idx)) { out.push(i0, i1, i2); idx.splice(k, 1); clipped = true; break; }
-    }
-    if (!clipped) { // degenerate (collinear points): drop a vertex
-      idx.splice(0, 1);
-    }
-  }
-  if (idx.length === 3) out.push(idx[0], idx[1], idx[2]);
-  return out;
-}
+export { triangulate };
 
 const FLOOR_MAT: Partial<Record<RoomType, MaterialKey>> = {
   bathroom: 'tile', ensuite: 'tile', laundry: 'tile', wc: 'tile', garage: 'concrete', kitchen: 'tile', entry: 'tile',
 };
 
-export function planToModel(plan: PlanSpec, opts: { roof?: boolean; ground?: boolean } = {}): ModelData {
+/** Flat slab from a plan polygon, between heights y0 and y1. */
+function slab(b: Builder, poly: Vec2[], y0: number, y1: number) {
+  const tris = triangulate(poly);
+  const base = b.p.length / 3, n = poly.length;
+  for (const [x, z] of poly) { b.p.push(x, y1, z); b.n.push(0, 1, 0); }
+  b.i.push(...tris.map((t) => t + base));
+  for (const [x, z] of poly) { b.p.push(x, y0, z); b.n.push(0, -1, 0); }
+  for (let t = 0; t < tris.length; t += 3) b.i.push(tris[t] + base + n, tris[t + 2] + base + n, tris[t + 1] + base + n);
+}
+
+/** The lot, its kerb and the roads around it (storey "Site", so viewers frame the building only). */
+function siteElements(plan: PlanSpec): ModelElement[] {
+  const s = normalizeSite(plan.site, plan.floors);
+  const poly = s.boundary!;
+  const out: ModelElement[] = [];
+  const kerb = new Builder();
+  poly.forEach((_, i) => {
+    const [a, b] = edgeOf(poly, i);
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (len < 0.05) return;
+    const n = outwardNormal(poly, i);
+    const mid = [(a[0] + b[0]) / 2 + n[0] * 0.06, 0, (a[1] + b[1]) / 2 + n[1] * 0.06];
+    kerb.box(mid, [(b[0] - a[0]) / len, 0, (b[1] - a[1]) / len], [n[0], 0, n[1]], len + 0.12, 0.12, -0.03, 0.06);
+  });
+  const k = kerb.element('site-kerb', 'Lot boundary', 'IfcSite', 'Site', 'concrete', [0.75, 0.74, 0.72, 1]);
+  if (k) out.push(k);
+  for (const r of roadShapes(s)) {
+    const road = new Builder();
+    slab(road, r.asphalt, -0.05, -0.012);
+    const e = road.element(`road-${r.edge}`, r.name, 'IfcSite', 'Site', 'dark', [0.22, 0.22, 0.23, 1], { road: r.name, width: r.width });
+    if (e) out.push(e);
+    const path = new Builder();
+    slab(path, r.verge, -0.05, 0.02);
+    const pe = path.element(`footpath-${r.edge}`, 'Footpath', 'IfcSite', 'Site', 'concrete', [0.8, 0.79, 0.76, 1]);
+    if (pe) out.push(pe);
+  }
+  return out;
+}
+
+export function planToModel(plan: PlanSpec, opts: { roof?: boolean; ground?: boolean; site?: boolean } = {}): ModelData {
   const elements: ModelElement[] = [];
   const storeys = [] as ModelData['storeys'];
   let elev = 0;
@@ -139,6 +144,7 @@ export function planToModel(plan: PlanSpec, opts: { roof?: boolean; ground?: boo
       }
     }
   });
+  if (opts.site) elements.push(...siteElements(plan));
   if (opts.ground) {
     const bb = computeBBox(elements);
     const b = new Builder();

@@ -13,6 +13,7 @@
  */
 import type { PlanSpec, Floor, Room, Wall, Opening, RoomType } from '@shared/planspec/schema';
 import { mulberry32 } from '@shared/util/rng';
+import { normalizeSite, rectBoundary } from '@shared/planspec/site';
 import { FEASIBILITY, type ProgramInput } from './feasibility';
 
 export interface GeneratorInput extends ProgramInput {
@@ -425,7 +426,9 @@ export function generatePlan(input: GeneratorInput): PlanSpec {
       createdAt: new Date(0).toISOString(),
       seed: input.seed,
     },
-    site: { width: r1(W + 8), depth: r1(D + 12), northAngle: 0 },
+    // Rectangular lot with a 4 m side and 6 m front/back margin; the street runs along the front
+    // (bottom) side and the entrance lines up with the front door.
+    site: normalizeSite({ width: r1(W + 8), depth: r1(D + 12), northAngle: 0, boundary: rectBoundary(-4, -6, r1(W + 8), r1(D + 12)), roads: [{ edge: 2 }] }, outFloors),
     floors: outFloors,
     requirements: {
       area: input.area, floors, bedrooms, bathrooms, extras: [...input.extras],

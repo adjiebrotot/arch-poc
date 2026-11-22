@@ -557,13 +557,24 @@ export class ViewerEngine {
     }
   }
 
+  /** Where north points, in degrees clockwise from -Z (plan "up"). Turns the sun path with it. */
+  northAngle = 0;
+  setNorth(deg: number) {
+    this.northAngle = deg;
+    this.setTimeOfDay(this.hour);
+  }
+
   /** Sun position from hour of day (6–20). */
   setTimeOfDay(hour: number) {
     this.hour = hour;
     const t = (hour - 6) / 14; // 0 sunrise … 1 sunset
     const elev = Math.sin(Math.PI * Math.min(1, Math.max(0, t))) * (Math.PI / 3) + 0.04;
     const az = Math.PI * t; // east → north → west (southern hemisphere feel)
-    const dir = new Vector3(Math.cos(az) * Math.cos(elev), Math.sin(elev), -Math.sin(az) * Math.cos(elev)).normalize();
+    const th = (this.northAngle * Math.PI) / 180;
+    // east and north on the ground plane (x, z), rotated by the plan's north angle
+    const ex = Math.cos(th), ez = Math.sin(th), nx = Math.sin(th), nz = -Math.cos(th);
+    const h = Math.cos(elev);
+    const dir = new Vector3((ex * Math.cos(az) + nx * Math.sin(az)) * h, Math.sin(elev), (ez * Math.cos(az) + nz * Math.sin(az)) * h).normalize();
     this.sun.direction = dir.scale(-1);
     const warm = 1 - Math.min(1, Math.sin(elev) * 2.2);
     this.sun.diffuse = new Color3(1, 0.93 - warm * 0.3, 0.85 - warm * 0.5);

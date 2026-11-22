@@ -48,6 +48,27 @@ export const FloorSchema = z.object({
   openings: z.array(OpeningSchema),
 });
 
+/** A road running along one side of the lot. `edge` i is boundary[i] → boundary[i+1]. */
+export const RoadSchema = z.object({
+  edge: z.number().int().nonnegative(),
+  name: z.string().optional(),
+  /** carriageway width in metres (default 6) */
+  width: z.number().positive().optional(),
+});
+
+export const SiteSchema = z.object({
+  /** bounding size of the lot (kept in sync with `boundary`, for older readers) */
+  width: z.number(),
+  depth: z.number(),
+  /** degrees, clockwise: where north points on the plan, measured from screen-up (0 = north is up) */
+  northAngle: z.number(),
+  /** lot outline in plan metres (any simple polygon, ≥ 3 points) */
+  boundary: z.array(Vec2).optional(),
+  roads: z.array(RoadSchema).optional(),
+  /** main entrance: a point on a road side, `t` 0–1 along that edge */
+  entrance: z.object({ edge: z.number().int().nonnegative(), t: z.number() }).optional(),
+});
+
 export const RequirementsSchema = z.object({
   area: z.number(),
   floors: z.number().int(),
@@ -68,7 +89,7 @@ export const PlanSpecSchema = z.object({
     id: z.string().optional(),
     seed: z.number().optional(),
   }),
-  site: z.object({ width: z.number(), depth: z.number(), northAngle: z.number() }).optional(),
+  site: SiteSchema.optional(),
   floors: z.array(FloorSchema).min(1),
   requirements: RequirementsSchema.optional(),
 });
@@ -77,6 +98,8 @@ export type Wall = z.infer<typeof WallSchema>;
 export type Room = z.infer<typeof RoomSchema>;
 export type Opening = z.infer<typeof OpeningSchema>;
 export type Floor = z.infer<typeof FloorSchema>;
+export type Road = z.infer<typeof RoadSchema>;
+export type Site = z.infer<typeof SiteSchema>;
 export type Requirements = z.infer<typeof RequirementsSchema>;
 export type PlanSpec = z.infer<typeof PlanSpecSchema>;
 
@@ -96,7 +119,7 @@ export function emptyPlan(mode: PlanSpec['meta']['mode'], title = 'My new home')
   return {
     version: '1.0',
     meta: { title, createdBy: 'client', mode, createdAt: new Date().toISOString() },
-    site: { width: 20, depth: 30, northAngle: 0 },
+    site: { width: 20, depth: 30, northAngle: 0, boundary: [[0, 0], [20, 0], [20, 30], [0, 30]], roads: [{ edge: 2 }], entrance: { edge: 2, t: 0.5 } },
     floors: [{ level: 0, height: 2.7, walls: [], rooms: [], openings: [] }],
   };
 }

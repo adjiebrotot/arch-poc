@@ -22,7 +22,7 @@
     <button class="absolute inset-0 bg-black/30 cursor-default" style="animation: fade .15s" aria-label="Close" tabindex="-1" onclick={backdrop}></button>
     <div bind:this={panel} role="dialog" aria-modal="true" aria-label={title}
       tabindex="-1"
-      onkeydown={(e) => e.key === 'Escape' && close()}
+      onkeydown={(e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } }}
       class="relative w-full {wide ? 'md:max-w-2xl' : 'md:max-w-lg'} max-h-[88vh] overflow-auto bg-card rounded-t-3xl md:rounded-3xl shadow-2xl safe-b"
       style="animation: rise .2s ease-out">
       <div class="sticky top-0 bg-card/95 backdrop-blur z-10 px-5 pt-3 pb-2 flex items-center gap-3 border-b border-line">
