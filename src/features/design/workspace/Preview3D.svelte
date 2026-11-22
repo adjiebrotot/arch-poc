@@ -12,9 +12,10 @@
 
   onMount(() => {
     try {
-      const model = planToModel($state.snapshot(plan) as PlanSpec, { roof: false });
-      if (!model.elements.length) { error = 'Draw some walls first — then come back to see them in 3D.'; return; }
+      const model = planToModel($state.snapshot(plan) as PlanSpec, { roof: false, site: true });
+      if (!model.elements.some((e) => e.storey !== 'Site')) { error = 'Draw some walls first — then come back to see them in 3D.'; return; }
       engine = new ViewerEngine(canvas, model, isMobileDevice() ? 'low' : 'medium');
+      engine.setNorth(plan.site?.northAngle ?? 0);
       engine.setMode('orbit');
       engine.orbitCam.beta = 0.85;
       engine.orbitCam.radius = engine.size * 1.3;
