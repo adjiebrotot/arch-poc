@@ -1,20 +1,26 @@
 import type { PlanSpec, Floor, Wall, Opening, RoomType, Site } from '@shared/planspec/schema';
-import { ROOM_LABELS } from '@shared/planspec/schema';
+import { ROOM_LABELS, floorLabel } from '@shared/planspec/schema';
 import { recomputeRooms } from '../engine/openplan3dAdapter';
-import { projectOnSegment, pointInPolygon, polygonCentroid, snap, dist, isSimplePolygon, interiorPoint, lineIntersection, type Vec2 } from '@shared/util/geometry';
+import { projectOnSegment, pointInPolygon, polygonCentroid, snap, dist, isSimplePolygon, interiorPoint, lineIntersection, pointInOrOn, nearestOnBoundary, polygonInPolygon, segmentInPolygon, type Vec2 } from '@shared/util/geometry';
 import * as site from '@shared/planspec/site';
+import * as env from '@shared/planspec/envelope';
 import { uid } from '@shared/util/id';
 import type { Anchor } from '@shared/comments/model';
 
-export type Tool = 'select' | 'room' | 'wall' | 'door' | 'window' | 'erase' | 'site';
+export type Tool = 'select' | 'room' | 'wall' | 'door' | 'window' | 'erase' | 'site' | 'footprint';
 /** `vertex`: a wall junction (corner); `id` is the room whose handles were showing, if any. */
 export type Selection = { kind: 'wall' | 'room' | 'opening'; id: string } | { kind: 'vertex'; id: string; point: Vec2 } | null;
-export type SiteSelection = { kind: 'lot-vertex' | 'lot-edge'; i: number } | null;
+export type SiteSelection = { kind: 'lot-vertex' | 'lot-edge' | 'fp-vertex' | 'fp-edge'; i: number } | null;
 export type RoomShape = 'polygon' | 'rect';
 export type Hit = { kind: 'wall' | 'room' | 'opening'; id: string; point: Vec2 } | { kind: 'space'; id: ''; point: Vec2 };
 
 const HISTORY_MAX = 100;
-export const GRID = 0.1;
+/** Corners of lots, footprints and rooms snap to the 1 m grid. */
+export const GRID = env.GRID;
+/** Doors and windows slide along their wall in 10 cm steps. */
+export const OPENING_GRID = 0.1;
+/** Name of the space left between rooms inside a sketched footprint. */
+export const OPEN_SPACE = 'Open space';
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
 const wallLen = (w: Wall) => dist(w.a, w.b);
 const EPS = 0.02;
@@ -35,6 +41,10 @@ export class Editor {
   siteSelection = $state<SiteSelection>(null);
   /** drawing a fresh lot outline with the Lot tool */
   drawingLot = $state(false);
+  /** drawing the current floor's footprint with the Footprint tool */
+  drawingFootprint = $state(false);
+  /** lot corners snap to the 1 m grid (off while tracing a lot over a map) */
+  lotGrid = $state(true);
   /** corner points of the room / lot outline being drawn */
   draft = $state<Vec2[]>([]);
   private undoStack: string[] = $state([]);
@@ -46,6 +56,15 @@ export class Editor {
   }
 
   get floor(): Floor { return this.plan.floors[this.floorIdx] ?? this.plan.floors[0]; }
+  /** Where this floor's walls may go: the centre line of its outside walls (null: no footprint yet). */
+  get roomBounds(): Vec2[] | null { return this.floor.footprint ? env.wallLine(this.floor.footprint) : null; }
+  /** Footprint of the floor below (shown as a silhouette while editing an upper floor). */
+  get floorBelow(): Floor | null { return this.floorIdx > 0 ? this.plan.floors[this.floorIdx - 1] : null; }
+  isEnvelopeWall(w: Wall): boolean { return env.isEnvelopeWall(this.floor, w); }
+  private insideBounds(walls: Pick<Wall, 'a' | 'b'>[]): boolean {
+    const b = this.roomBounds;
+    return !b || walls.every((w) => segmentInPolygon(w.a, w.b, b, 0.01));
+  }
   get canUndo() { return this.undoStack.length > 0; }
   get canRedo() { return this.redoStack.length > 0; }
 
@@ -86,7 +105,8 @@ export class Editor {
     this.onChange?.();
   }
   validateSelection() {
-    const ss = this.siteSelection, n = this.plan.site?.boundary?.length ?? 0;
+    const ss = this.siteSelection;
+    const n = ss?.kind.startsWith('fp') ? this.floor.footprint?.length ?? 0 : this.plan.site?.boundary?.length ?? 0;
     if (ss && ss.i >= n) this.siteSelection = null;
     const s = this.selection;
     if (!s) return;
@@ -100,8 +120,11 @@ export class Editor {
   }
 
   // ---- snapping & hit testing -----------------------------------------------------
-  snapPoint(p: Vec2, tol: number, opts: { floor?: Floor; exclude?: Set<string>; from?: Vec2; extra?: Vec2[] } = {}): Vec2 {
-    if (!this.snapping) return [r3(p[0]), r3(p[1])];
+  snapPoint(p: Vec2, tol: number, opts: { floor?: Floor; exclude?: Set<string>; extra?: Vec2[]; grid?: number; bounds?: Vec2[] | null } = {}): Vec2 {
+    const bounds = opts.bounds === undefined ? (opts.floor ? null : this.roomBounds) : opts.bounds;
+    const keepIn = (q: Vec2): Vec2 => (bounds && !pointInOrOn(q, bounds, 1e-3) ? nearestOnBoundary(q, bounds).map((v) => Math.round(v * 1000) / 1000) as Vec2 : q);
+    if (!this.snapping) return keepIn([r3(p[0]), r3(p[1])]);
+    const grid = opts.grid ?? GRID;
     const walls = (opts.floor ?? this.floor).walls.filter((w) => !opts.exclude?.has(w.id));
     let best: Vec2 | null = null, bd = tol;
     for (const e of [...walls.flatMap((w) => [w.a, w.b]), ...(opts.extra ?? [])]) {
@@ -109,30 +132,18 @@ export class Editor {
       if (d < bd) { bd = d; best = e; }
     }
     if (best) return [...best] as Vec2;
-    if (opts.from) {
-      // angle snap: keep 0/45/90° lines from the previous point
-      const dx = p[0] - opts.from[0], dy = p[1] - opts.from[1];
-      const len = Math.hypot(dx, dy);
-      if (len > 0.2) {
-        const ang = Math.atan2(dy, dx), step = Math.PI / 4;
-        const q = Math.round(ang / step) * step;
-        if (Math.abs(ang - q) < (6 * Math.PI) / 180) {
-          const L = snap(len, GRID);
-          return [r3(opts.from[0] + Math.cos(q) * L), r3(opts.from[1] + Math.sin(q) * L)];
-        }
-      }
-    }
+    const g: Vec2 = [r3(snap(p[0], grid)), r3(snap(p[1], grid))];
     for (const w of walls) {
       const pr = projectOnSegment(p, w.a, w.b);
       if (pr.d < tol * 0.6 && pr.t > 0.02 && pr.t < 0.98) {
-        // snap onto the wall, but keep grid along it when axis-aligned
+        // onto the wall, keeping the grid along it when it runs square to the grid
         const q = pr.point;
-        if (Math.abs(w.a[0] - w.b[0]) < 1e-6) return [w.a[0], snap(q[1], GRID)];
-        if (Math.abs(w.a[1] - w.b[1]) < 1e-6) return [snap(q[0], GRID), w.a[1]];
-        return [r3(q[0]), r3(q[1])];
+        if (Math.abs(w.a[0] - w.b[0]) < 1e-6) return keepIn([w.a[0], g[1]]);
+        if (Math.abs(w.a[1] - w.b[1]) < 1e-6) return keepIn([g[0], w.a[1]]);
+        return keepIn([r3(q[0]), r3(q[1])]);
       }
     }
-    return [r3(snap(p[0], GRID)), r3(snap(p[1], GRID))];
+    return keepIn(g);
   }
 
   hitTest(p: Vec2, tol: number): Hit {
@@ -200,22 +211,24 @@ export class Editor {
     }
   }
 
-  addRoomRect(p0: Vec2, p1: Vec2): string | null {
+  addRoomRect(p0: Vec2, p1: Vec2): { id: string | null; error?: string } {
     const x0 = Math.min(p0[0], p1[0]), x1 = Math.max(p0[0], p1[0]);
     const y0 = Math.min(p0[1], p1[1]), y1 = Math.max(p0[1], p1[1]);
-    if (x1 - x0 < 1 || y1 - y0 < 1) return null;
+    if (x1 - x0 < 1 || y1 - y0 < 1) return { id: null, error: 'Make the room at least 1 m each way' };
     const corners: Vec2[] = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    const b = this.roomBounds;
+    if (b && !polygonInPolygon(corners, b, 0.01)) return { id: null, error: `Rooms have to stay inside the ${floorLabel(this.floor.level).toLowerCase()} footprint` };
     this.commit((f) => {
       for (let i = 0; i < 4; i++) this.addEdge(f, corners[i], corners[(i + 1) % 4], this.newWallThickness);
     });
     const c: Vec2 = [(x0 + x1) / 2, (y0 + y1) / 2];
     const room = this.floor.rooms.filter((r) => pointInPolygon(c, r.polygon)).sort((a, b) => a.area - b.area)[0];
     if (room) {
-      if (room.name === 'Room') this.applyFloor((f) => { const r = f.rooms.find((x) => x.id === room.id)!; r.name = 'New room'; }, false);
+      if (room.name === 'Room' || room.name === OPEN_SPACE) this.applyFloor((f) => { const r = f.rooms.find((x) => x.id === room.id)!; r.name = 'New room'; }, false);
       this.selection = { kind: 'room', id: room.id };
-      return room.id;
+      return { id: room.id };
     }
-    return null;
+    return { id: null };
   }
 
   /** Add a room of any shape from its corner points. Returns the room id, or an error message. */
@@ -223,13 +236,24 @@ export class Editor {
     const pts = points.filter((p, i) => !near(p, points[(i + 1) % points.length], 0.05));
     if (pts.length < 3) return { id: null, error: 'A room needs at least 3 corners' };
     if (!isSimplePolygon(pts)) return { id: null, error: 'The outline crosses itself, try again' };
+    const b = this.roomBounds;
+    if (b && !polygonInPolygon(pts, b, 0.01)) return { id: null, error: `Rooms have to stay inside the ${floorLabel(this.floor.level).toLowerCase()} footprint` };
     const inside = interiorPoint(pts);
     this.commit((f) => {
       for (let i = 0; i < pts.length; i++) this.addEdge(f, pts[i], pts[(i + 1) % pts.length], this.newWallThickness);
     });
     const room = this.floor.rooms.filter((r) => pointInPolygon(inside, r.polygon)).sort((a, b) => a.area - b.area)[0];
     if (!room) return { id: null };
-    if (room.name === 'Room') this.applyFloor((f) => { const r = f.rooms.find((x) => x.id === room.id)!; r.name = 'New room'; }, false);
+    this.applyFloor((f) => {
+      const r = f.rooms.find((x) => x.id === room.id)!;
+      // the new room may have taken over the open space's name: hand it back to what's left
+      if (r.name === OPEN_SPACE) {
+        const rest = f.rooms.filter((x) => x.id !== r.id && x.name === 'Room').sort((p, q) => q.area - p.area)[0];
+        if (rest) rest.name = OPEN_SPACE;
+        r.type = 'other';
+      }
+      if (r.name === 'Room' || r.name === OPEN_SPACE) r.name = 'New room';
+    }, false);
     this.selection = { kind: 'room', id: room.id };
     return { id: room.id };
   }
@@ -270,8 +294,9 @@ export class Editor {
   moveVertexFrom(start: Floor, p0: Vec2, p: Vec2, tol = 0.2): boolean {
     const { ends, host } = this.junction(start, p0);
     if (!ends.length) return false;
+    if (ends.some((e) => env.isEnvelopeWall(start, start.walls.find((w) => w.id === e.id)!))) return false;
     const moving = new Set(ends.map((e) => e.id));
-    let q = this.snapPoint(p, tol, { floor: start, exclude: moving });
+    let q = this.snapPoint(p, tol, { floor: start, exclude: moving, bounds: this.roomBounds });
     if (host) {
       // slide along the wall it T's into
       const pr = projectOnSegment(q, host.a, host.b);
@@ -283,6 +308,7 @@ export class Editor {
     for (const e of ends) f.walls.find((w) => w.id === e.id)![e.k] = q;
     // too short or folded over → refuse this step
     for (const id of moving) { const w = f.walls.find((x) => x.id === id)!; if (wallLen(w) < 0.1) return false; }
+    if (!this.insideBounds(f.walls.filter((w) => moving.has(w.id)))) return false;
     // walls attached in the middle of a moved wall keep touching it
     for (const id of moving) {
       const w0 = before.get(id)!, w1 = f.walls.find((x) => x.id === id)!;
@@ -320,6 +346,7 @@ export class Editor {
     if (host || ends.length !== 2) return ends.length > 2 ? 'More than two walls meet here' : 'This corner can\'t be removed';
     const [e1, e2] = ends.map((e) => f0.walls.find((w) => w.id === e.id)!);
     if (e1.id === e2.id) return 'This corner can\'t be removed';
+    if (env.isEnvelopeWall(f0, e1) || env.isEnvelopeWall(f0, e2)) return 'This corner belongs to the footprint: change it with 🏠 Footprint';
     const far1 = near(e1.a, p) ? e1.b : e1.a, far2 = near(e2.a, p) ? e2.b : e2.a;
     if (dist(far1, far2) < 0.1) return 'This corner can\'t be removed';
     this.commit((f) => {
@@ -352,28 +379,100 @@ export class Editor {
     this.validateSelection();
     this.onChange?.();
   }
-  moveLotVertexFrom(start: Site, i: number, p: Vec2, tol: number) {
+  /** Snap a lot corner: 1 m grid (or free on a map), other lot corners. */
+  snapLot(p: Vec2, tol: number, extra: Vec2[] = []): Vec2 {
+    return this.snapPoint(p, tol, { floor: { ...this.floor, walls: [] }, extra, grid: this.lotGrid ? GRID : 0.1, bounds: null });
+  }
+  moveLotVertexFrom(start: Site, i: number, p: Vec2, tol: number): string | null {
     const others = start.boundary!.filter((_, k) => k !== i);
-    const prev = start.boundary![(i + start.boundary!.length - 1) % start.boundary!.length];
-    const q = this.snapPoint(p, tol, { floor: { ...this.floor, walls: [] }, extra: others, from: prev });
+    const q = this.snapLot(p, tol, others);
     const boundary = start.boundary!.map((v, k) => (k === i ? q : v));
-    if (!isSimplePolygon(boundary)) return;
+    const err = env.checkLot(this.plan, boundary);
+    if (err) return err;
     const next = { ...structuredClone(start), boundary };
     site.syncSize(next);
     this.setSite(next, false);
+    return null;
   }
-  replaceLot(points: Vec2[]): string | null {
-    const pts = points.filter((p, i) => !near(p, points[(i + 1) % points.length], 0.05));
-    if (pts.length < 3) return 'A lot needs at least 3 corners';
-    if (!isSimplePolygon(pts)) return 'The outline crosses itself, try again';
-    this.setSite(site.replaceBoundary(this.site, pts));
+  removeLotVertex(i: number): string | null {
+    const b = this.site.boundary!;
+    if (b.length <= 3) return 'A lot needs at least 3 corners';
+    const next = site.removeVertex(this.site, i);
+    const err = env.checkLot(this.plan, next.boundary!);
+    if (err) return err;
+    this.setSite(next);
+    this.siteSelection = null;
+    return null;
+  }
+  /** A whole new lot outline (one road on the side nearest the old entrance). */
+  replaceLot(points: Vec2[], extra: Partial<Site> = {}): string | null {
+    const pts = env.cleanOutline(points);
+    const err = env.checkLot(this.plan, pts);
+    if (err) return err;
+    const base: Site = this.plan.site ?? { width: 0, depth: 0, northAngle: 0 };
+    const next = site.replaceBoundary(base, pts);
+    this.setSite({ ...next, ...extra });
     this.siteSelection = null;
     return null;
   }
 
-  addWall(a: Vec2, b: Vec2) {
-    if (dist(a, b) < 0.1) return;
+  // ---- footprints (each floor's envelope) ------------------------------------------------------
+  /** Snap a footprint corner to the 1 m grid (and the corners of the lot / floor below). */
+  snapFootprint(p: Vec2, tol: number, extra: Vec2[] = []): Vec2 {
+    const c = env.containerFor(this.plan, this.floorIdx).poly ?? [];
+    return this.snapPoint(p, tol, { floor: { ...this.floor, walls: [] }, extra: [...extra, ...c], bounds: null });
+  }
+  /** Set the current floor's footprint after checking the hierarchy. Returns an error message or null. */
+  setFootprint(poly: Vec2[], history = true): string | null {
+    const err = env.checkFootprint(this.plan, this.floorIdx, poly);
+    if (err) return err;
+    const res = env.applyFootprint($state.snapshot(this.floor) as Floor, poly);
+    if ('error' in res) return res.error;
+    if (history) this.pushHistory();
+    this.plan.floors[this.floorIdx] = res.floor.walls.length ? recomputeRooms(res.floor) : res.floor;
+    this.validateSelection();
+    this.onChange?.();
+    return null;
+  }
+  moveFootprintVertexFrom(start: Vec2[], i: number, p: Vec2, tol: number): string | null {
+    const q = this.snapFootprint(p, tol, start.filter((_, k) => k !== i));
+    return this.setFootprint(start.map((v, k) => (k === i ? q : v)), false);
+  }
+  insertFootprintVertex(start: Vec2[], i: number, p: Vec2): Vec2[] {
+    return [...start.slice(0, i + 1), p, ...start.slice(i + 1)];
+  }
+  removeFootprintVertex(i: number): string | null {
+    const fp = this.floor.footprint;
+    if (!fp) return null;
+    if (fp.length <= 3) return 'A footprint needs at least 3 corners';
+    const err = this.setFootprint(fp.filter((_, k) => k !== i));
+    if (!err) this.siteSelection = null;
+    return err;
+  }
+  /** Draw a fresh footprint for the current floor. */
+  replaceFootprint(points: Vec2[]): string | null {
+    const err = this.setFootprint(env.cleanOutline(points));
+    if (!err) { this.siteSelection = null; this.drawingFootprint = false; }
+    return err;
+  }
+  /** Sketch mode, entering the workspace: floors get outside walls along their footprints. */
+  addEnvelopeWalls() {
+    let changed = false;
+    this.plan.floors = this.plan.floors.map((f) => {
+      if (!f.footprint || f.walls.length) return f;
+      changed = true;
+      const next = recomputeRooms(env.withEnvelopeWalls(f));
+      for (const r of next.rooms) if (r.name === 'Room') r.name = OPEN_SPACE;
+      return next;
+    });
+    if (changed) this.onChange?.();
+  }
+
+  addWall(a: Vec2, b: Vec2): string | null {
+    if (dist(a, b) < 0.1) return null;
+    if (!this.insideBounds([{ a, b }])) return 'Walls have to stay inside the footprint';
     this.commit((f) => this.addEdge(f, a, b, this.newWallThickness));
+    return null;
   }
 
   addOpening(type: 'door' | 'window', p: Vec2, tol: number): boolean {
@@ -383,7 +482,7 @@ export class Editor {
     const len = wallLen(w);
     const width = Math.min(type === 'door' ? 0.82 : 1.2, len - 0.2);
     if (width < 0.4) return false;
-    const offset = r3(Math.min(len - width / 2 - 0.05, Math.max(width / 2 + 0.05, snap(hit.offset, GRID))));
+    const offset = r3(Math.min(len - width / 2 - 0.05, Math.max(width / 2 + 0.05, snap(hit.offset, OPENING_GRID))));
     const o: Opening = type === 'door'
       ? { id: uid('o'), wallId: w.id, type, offset, width, height: 2.04 }
       : { id: uid('o'), wallId: w.id, type, offset, width, height: 1.2, sill: 0.9 };
@@ -395,19 +494,22 @@ export class Editor {
   /** Move a wall along its normal; walls attached to it (ends or T-junctions) follow. */
   moveWallFrom(start: Floor, id: string, delta: Vec2): void {
     const w0 = start.walls.find((w) => w.id === id);
-    if (!w0) return;
+    if (!w0 || env.isEnvelopeWall(start, w0)) return;
     const len = wallLen(w0) || 1;
     const nx = -(w0.b[1] - w0.a[1]) / len, ny = (w0.b[0] - w0.a[0]) / len;
     let d = delta[0] * nx + delta[1] * ny;
     if (this.snapping) d = snap(d, GRID);
     const dv: Vec2 = [nx * d, ny * d];
     const mv = (p: Vec2): Vec2 => [r3(p[0] + dv[0]), r3(p[1] + dv[1])];
+    const f1 = structuredClone(start) as Floor;
+    for (const w of f1.walls) {
+      if (w.id === id) { w.a = mv(w.a); w.b = mv(w.b); continue; }
+      if (env.isEnvelopeWall(start, w)) continue;
+      for (const k of ['a', 'b'] as const) if (projectOnSegment(w[k], w0.a, w0.b).d < 0.02) w[k] = mv(w[k]);
+    }
+    if (!this.insideBounds(f1.walls)) return;
     this.applyFloor(() => {
-      const f = structuredClone(start) as Floor;
-      for (const w of f.walls) {
-        if (w.id === id) { w.a = mv(w.a); w.b = mv(w.b); continue; }
-        for (const k of ['a', 'b'] as const) if (projectOnSegment(w[k], w0.a, w0.b).d < 0.02) w[k] = mv(w[k]);
-      }
+      const f = f1;
       // keep openings inside their (possibly resized) walls
       const byId = new Map(f.walls.map((w) => [w.id, w]));
       for (const o of f.openings) {
@@ -424,7 +526,7 @@ export class Editor {
     if (!o0 || !w) return;
     const len = wallLen(w);
     const t = projectOnSegment(p, w.a, w.b).t * len;
-    const off = Math.min(len - o0.width / 2, Math.max(o0.width / 2, this.snapping ? snap(t, GRID) : t));
+    const off = Math.min(len - o0.width / 2, Math.max(o0.width / 2, this.snapping ? snap(t, OPENING_GRID) : t));
     this.applyFloor(() => {
       const f = structuredClone(start) as Floor;
       f.openings.find((o) => o.id === id)!.offset = r3(off);
@@ -438,6 +540,10 @@ export class Editor {
       // keep the room whose corner it was selected, so its other corners stay editable
       if (!err && sel.id && this.floor.rooms.some((r) => r.id === sel.id)) this.selection = { kind: 'room', id: sel.id };
       return err;
+    }
+    if (sel.kind === 'wall') {
+      const w = this.floor.walls.find((x) => x.id === sel.id);
+      if (w && this.isEnvelopeWall(w)) return 'Outside walls follow the footprint: change them with 🏠 Footprint';
     }
     this.commit((f) => {
       if (sel.kind === 'opening') f.openings = f.openings.filter((o) => o.id !== sel.id);
@@ -458,7 +564,7 @@ export class Editor {
           const mid: Vec2 = [(w.a[0] + w.b[0]) / 2, (w.a[1] + w.b[1]) / 2];
           return r.polygon.some((p, i) => projectOnSegment(mid, p, r.polygon[(i + 1) % r.polygon.length]).d < 0.02);
         });
-        const remove = new Set(f.walls.filter((w) => onBoundary(w) && !sharedWith(w)).map((w) => w.id));
+        const remove = new Set(f.walls.filter((w) => onBoundary(w) && !sharedWith(w) && !env.isEnvelopeWall(f, w)).map((w) => w.id));
         f.walls = f.walls.filter((w) => !remove.has(w.id));
         f.openings = f.openings.filter((o) => !remove.has(o.wallId));
       }
@@ -482,18 +588,33 @@ export class Editor {
     this.commit((f) => { const w = f.walls.find((x) => x.id === id); if (w) Object.assign(w, patch); }, { recompute: false });
   }
 
-  addFloor() {
+  /**
+   * Add a storey on top. Its footprint starts as exactly the floor below; in the workspace it also
+   * gets outside walls along it, ready for rooms.
+   */
+  addFloor(withWalls = this.plan.meta.stage === 'design' || this.plan.meta.stage === undefined) {
     this.pushHistory();
-    const top = this.plan.floors[this.plan.floors.length - 1];
-    // Copy the outer walls of the top floor as a starting point.
-    const walls = top.walls.filter((w) => w.exterior).map((w) => ({ ...w, id: uid('w') }));
-    this.plan.floors.push(recomputeRooms({ level: top.level + 1, height: top.height, walls, rooms: [], openings: [] }));
+    const top = $state.snapshot(this.plan.floors[this.plan.floors.length - 1]) as Floor;
+    let next: Floor;
+    if (top.footprint) {
+      next = env.floorAbove(top, withWalls);
+      if (next.walls.length) { next = recomputeRooms(next); for (const r of next.rooms) if (r.name === 'Room') r.name = OPEN_SPACE; }
+    } else {
+      // older plans without footprints: copy the outer walls of the top floor
+      const walls = top.walls.filter((w) => w.exterior).map((w) => ({ ...w, id: uid('w') }));
+      next = recomputeRooms({ level: top.level + 1, height: top.height, walls, rooms: [], openings: [] });
+    }
+    this.plan.floors.push(next);
     this.floorIdx = this.plan.floors.length - 1;
+    this.selection = null;
+    this.siteSelection = null;
     this.onChange?.();
   }
   removeFloor() {
     if (this.plan.floors.length < 2) return;
     this.pushHistory();
+    this.selection = null;
+    this.siteSelection = null;
     this.plan.floors.splice(this.floorIdx, 1);
     this.plan.floors.forEach((f, i) => (f.level = i));
     this.floorIdx = Math.max(0, this.floorIdx - 1);

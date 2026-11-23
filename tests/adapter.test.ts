@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { planSpecToOpenPlan3D, openPlan3DToPlanSpec, recomputeRooms } from '../src/features/design/engine/openplan3dAdapter';
 import { generatePlan } from '../src/features/design/generator/generator';
 import { planSignature } from '../src/features/design/generator/generator';
+import { demoEnvelope } from '../src/features/design/generator/templates';
 
-const plan = generatePlan({ area: 120, floors: 1, bedrooms: 3, bathrooms: 1, extras: ['laundry'], seed: 4 });
+const plan = generatePlan({ envelope: demoEnvelope('cottage'), bedrooms: 3, bathrooms: 1, extras: ['laundry'], seed: 4 });
 
 describe('PlanSpec ⇄ openPlan3D adapters', () => {
   it('converts to openPlan3D centimetre floors', () => {

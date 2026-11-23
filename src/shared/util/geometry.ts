@@ -138,3 +138,150 @@ export function interiorPoint(poly: Vec2[]): Vec2 {
   }
   return best;
 }
+
+// ---- containment, clipping and offsets (lot ⊇ footprint ⊇ rooms) ---------------------------
+
+/** Shortest distance from p to the polygon's outline. */
+export function distToBoundary(p: Vec2, poly: Vec2[]): number {
+  let d = Infinity;
+  for (let i = 0; i < poly.length; i++) d = Math.min(d, projectOnSegment(p, poly[i], poly[(i + 1) % poly.length]).d);
+  return d;
+}
+
+/** Nearest point on the polygon's outline. */
+export function nearestOnBoundary(p: Vec2, poly: Vec2[]): Vec2 {
+  let best: Vec2 = poly[0], bd = Infinity;
+  for (let i = 0; i < poly.length; i++) {
+    const pr = projectOnSegment(p, poly[i], poly[(i + 1) % poly.length]);
+    if (pr.d < bd) { bd = pr.d; best = pr.point; }
+  }
+  return best;
+}
+
+/** Inside the polygon or on its outline (within eps). */
+export function pointInOrOn(p: Vec2, poly: Vec2[], eps = 1e-3): boolean {
+  return pointInPolygon(p, poly) || distToBoundary(p, poly) <= eps;
+}
+
+/** Strictly inside: inside and at least eps away from the outline. */
+export function pointStrictlyIn(p: Vec2, poly: Vec2[], eps = 1e-6): boolean {
+  return pointInPolygon(p, poly) && distToBoundary(p, poly) > eps;
+}
+
+/** Parameters t∈(0,1) where segment ab meets the polygon outline (crossings, touches, vertices). */
+function boundaryParams(a: Vec2, b: Vec2, poly: Vec2[], eps: number): number[] {
+  const ts: number[] = [];
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1e-18) return ts;
+  for (let i = 0; i < poly.length; i++) {
+    const c = poly[i], d = poly[(i + 1) % poly.length];
+    const pr = projectOnSegment(c, a, b);
+    if (pr.d <= eps) ts.push(pr.t);
+    const ex = d[0] - c[0], ey = d[1] - c[1];
+    const den = dx * ey - dy * ex;
+    if (Math.abs(den) < 1e-12) continue;
+    const t = ((c[0] - a[0]) * ey - (c[1] - a[1]) * ex) / den;
+    const u = ((c[0] - a[0]) * dy - (c[1] - a[1]) * dx) / den;
+    if (t > 0 && t < 1 && u >= -1e-9 && u <= 1 + 1e-9) ts.push(t);
+  }
+  return ts.filter((t) => t > 1e-9 && t < 1 - 1e-9);
+}
+
+/** Segment ab lies inside the closed polygon (running along or touching the outline is fine). */
+export function segmentInPolygon(a: Vec2, b: Vec2, poly: Vec2[], eps = 1e-3): boolean {
+  if (!pointInOrOn(a, poly, eps) || !pointInOrOn(b, poly, eps)) return false;
+  const ts = [0, ...boundaryParams(a, b, poly, eps), 1].sort((x, y) => x - y);
+  for (let i = 0; i + 1 < ts.length; i++) {
+    if (ts[i + 1] - ts[i] < 1e-9) continue;
+    const t = (ts[i] + ts[i + 1]) / 2;
+    if (!pointInOrOn([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t], poly, eps)) return false;
+  }
+  return true;
+}
+
+/** Every part of `inner` lies inside the closed polygon `outer` (shared edges and corners are fine). */
+export function polygonInPolygon(inner: Vec2[], outer: Vec2[], eps = 1e-3): boolean {
+  return inner.every((p, i) => segmentInPolygon(p, inner[(i + 1) % inner.length], outer, eps));
+}
+
+/** The parts of segment ab strictly inside the polygon (parts on the outline are dropped). */
+export function clipSegmentToPolygon(a: Vec2, b: Vec2, poly: Vec2[], eps = 1e-6): [Vec2, Vec2][] {
+  const ts = [0, ...boundaryParams(a, b, poly, eps), 1].sort((x, y) => x - y);
+  const at = (t: number): Vec2 => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  const out: [number, number][] = [];
+  for (let i = 0; i + 1 < ts.length; i++) {
+    if (ts[i + 1] - ts[i] < 1e-9) continue;
+    if (!pointStrictlyIn(at((ts[i] + ts[i + 1]) / 2), poly, eps * 10)) continue;
+    const last = out[out.length - 1];
+    if (last && Math.abs(last[1] - ts[i]) < 1e-9) last[1] = ts[i + 1];
+    else out.push([ts[i], ts[i + 1]]);
+  }
+  return out.map(([t0, t1]) => [at(t0), at(t1)]);
+}
+
+/** Sutherland–Hodgman: the part of `poly` inside the axis-aligned box (area-correct for any simple polygon). */
+export function clipPolygonToBox(poly: Vec2[], x0: number, y0: number, x1: number, y1: number): Vec2[] {
+  let out = poly;
+  const edges: [(p: Vec2) => boolean, (p: Vec2, q: Vec2) => Vec2][] = [
+    [(p) => p[0] >= x0, (p, q) => [x0, p[1] + ((q[1] - p[1]) * (x0 - p[0])) / (q[0] - p[0])]],
+    [(p) => p[0] <= x1, (p, q) => [x1, p[1] + ((q[1] - p[1]) * (x1 - p[0])) / (q[0] - p[0])]],
+    [(p) => p[1] >= y0, (p, q) => [p[0] + ((q[0] - p[0]) * (y0 - p[1])) / (q[1] - p[1]), y0]],
+    [(p) => p[1] <= y1, (p, q) => [p[0] + ((q[0] - p[0]) * (y1 - p[1])) / (q[1] - p[1]), y1]],
+  ];
+  for (const [inside, cut] of edges) {
+    if (!out.length) break;
+    const src = out;
+    out = [];
+    for (let i = 0; i < src.length; i++) {
+      const p = src[i], q = src[(i + 1) % src.length];
+      const pi = inside(p), qi = inside(q);
+      if (pi) out.push(p);
+      if (pi !== qi) out.push(cut(p, q));
+    }
+  }
+  return out;
+}
+
+/** Drop repeated points and points in the middle of a straight side. */
+export function simplifyPolygon(poly: Vec2[], eps = 1e-6): Vec2[] {
+  let pts = poly.filter((p, i) => dist(p, poly[(i + 1) % poly.length]) > eps);
+  let changed = true;
+  while (changed && pts.length > 3) {
+    changed = false;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[(i + pts.length - 1) % pts.length], b = pts[i], c = pts[(i + 1) % pts.length];
+      if (Math.abs(orient(a, b, c)) < eps * Math.max(1, dist(a, c))) { pts = pts.filter((_, k) => k !== i); changed = true; break; }
+    }
+  }
+  return pts;
+}
+
+/**
+ * Offset a simple polygon: d > 0 moves every side inwards by d, d < 0 outwards.
+ * Corners are mitred (adjacent offset sides meet), which keeps right angles square.
+ */
+export function offsetPolygon(poly: Vec2[], d: number): Vec2[] {
+  const pts = simplifyPolygon(poly);
+  const n = pts.length;
+  if (n < 3) return pts;
+  const s = signedArea(pts) > 0 ? 1 : -1; // y-down: > 0 runs clockwise on screen
+  const lines = pts.map((p, i) => {
+    const q = pts[(i + 1) % n];
+    const len = dist(p, q) || 1;
+    const ux = (q[0] - p[0]) / len, uy = (q[1] - p[1]) / len;
+    const nx = -uy * s * d, ny = ux * s * d; // inward normal × d
+    return [[p[0] + nx, p[1] + ny], [q[0] + nx, q[1] + ny]] as [Vec2, Vec2];
+  });
+  return pts.map((p, i) => {
+    const l0 = lines[(i + n - 1) % n], l1 = lines[i];
+    return lineIntersection(l0[0], l0[1], l1[0], l1[1]) ?? l1[0];
+  });
+}
+
+/** Rotate p by `deg` degrees clockwise on screen (y down) around `o`. */
+export function rotatePoint(p: Vec2, deg: number, o: Vec2 = [0, 0]): Vec2 {
+  const a = (deg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
+  const x = p[0] - o[0], y = p[1] - o[1];
+  return [o[0] + x * c - y * s, o[1] + x * s + y * c];
+}

@@ -6,6 +6,7 @@ import { roadShapes, entrancePoint, bounds } from '@shared/planspec/site';
 export function floorBounds(f: Floor, pad = 0.6) {
   const xs: number[] = [], ys: number[] = [];
   for (const w of f.walls) { xs.push(w.a[0], w.b[0]); ys.push(w.a[1], w.b[1]); }
+  for (const p of f.footprint ?? []) { xs.push(p[0]); ys.push(p[1]); }
   for (const r of f.rooms) for (const p of r.polygon) { xs.push(p[0]); ys.push(p[1]); }
   if (!xs.length) return { x: -5, y: -5, w: 10, h: 10 };
   const x0 = Math.min(...xs) - pad, y0 = Math.min(...ys) - pad;
@@ -39,6 +40,7 @@ export function floorToSvg(f: Floor, opts: { labels?: boolean; width?: number; a
     }
     parts.push(`<polygon points="${pts(st.boundary!)}" fill="#EEF2E8" stroke="#7F9A6E" stroke-width="0.06" stroke-dasharray="0.4 0.25"/>`);
   }
+  if (f.footprint && !f.walls.length) parts.push(`<polygon points="${pts(f.footprint)}" fill="#fff" stroke="#2F5D7C" stroke-width="0.08"/>`);
   for (const r of f.rooms) {
     parts.push(`<polygon points="${r.polygon.map((p) => p.join(',')).join(' ')}" fill="${ROOM_COLORS[r.type] ?? '#eee'}"/>`);
   }

@@ -24,7 +24,11 @@ export interface ParsedRequirements {
   notes: string;
 }
 
-export const ESSENTIALS = ['bedrooms', 'bathrooms', 'area', 'floors'] as const;
+/**
+ * What the chat must find out. The floor area and the number of floors are not asked for: the
+ * client has already drawn the footprints of every floor, which fixes both.
+ */
+export const ESSENTIALS = ['bedrooms', 'bathrooms'] as const;
 export type Essential = (typeof ESSENTIALS)[number];
 
 export interface ParseResult {
@@ -66,6 +70,11 @@ const EXTRA_SYNONYMS: Record<string, string> = {
   garage: 'garage', carport: 'garage', 'car park': 'garage', parking: 'garage',
   laundry: 'laundry', 'utility room': 'laundry', utility: 'laundry',
   'open-plan': 'open-plan', 'open plan': 'open-plan', 'open_plan': 'open-plan', 'open-plan living': 'open-plan', 'open plan living': 'open-plan',
+  dining: 'dining', 'dining room': 'dining', 'separate dining': 'dining', 'formal dining': 'dining',
+  family: 'family', 'family room': 'family', rumpus: 'family', 'rumpus room': 'family', 'media room': 'family', playroom: 'family', 'second living': 'family',
+  powder: 'powder', 'powder room': 'powder', 'guest toilet': 'powder', 'guest wc': 'powder', 'separate toilet': 'powder', wc: 'powder',
+  'master-ground': 'master-ground', 'master downstairs': 'master-ground', 'main bedroom downstairs': 'master-ground', 'master on ground floor': 'master-ground', 'master_ground': 'master-ground',
+  'living-back': 'living-back', 'living at the back': 'living-back', 'living facing the garden': 'living-back', 'garden facing living': 'living-back', 'living_back': 'living-back',
 };
 
 const clampInt = (v: number | null, lo: number, hi: number) =>

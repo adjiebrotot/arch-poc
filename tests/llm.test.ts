@@ -106,3 +106,20 @@ describe('MockProvider', () => {
     expect((await m.parse(req('a'))).status).toBe('complete');
   });
 });
+
+describe('rule-based parser: rooms and how they relate', async () => {
+  const { RuleBasedProvider } = await import('../src/features/design/llm');
+  const rb = new RuleBasedProvider();
+  const ask = (text: string) => rb.parse({ sessionId: 's', messages: [{ role: 'user', content: text }], schemaVersion: 'requirements-1.0', locale: 'en-AU' });
+
+  it('only needs bedrooms and bathrooms: size and storeys come from the drawn floors', async () => {
+    const r = await ask('3 bedrooms and 2 bathrooms please');
+    expect(r.status).toBe('complete');
+    expect(r.missingFields).toEqual([]);
+  });
+
+  it('understands extra rooms and room relationships', async () => {
+    const r = await ask('4 bed 2 bath with a family room and a powder room, main bedroom downstairs and the living room facing the back garden');
+    expect(r.requirements.extras).toEqual(expect.arrayContaining(['family', 'powder', 'master-ground', 'living-back']));
+  });
+});

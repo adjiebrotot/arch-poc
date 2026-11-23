@@ -15,14 +15,14 @@ export class MockProvider implements LLMProvider {
 const DEFAULT_SCRIPT: Omit<ParseResult, 'provider'>[] = [
   {
     status: 'needs_clarification',
-    requirements: { area: null, floors: 1, bedrooms: 3, bathrooms: 2, extras: ['study'], style: 'scandinavian', notes: 'Lots of light, a home office.' },
-    assistantMessage: 'Lovely — a light-filled Scandinavian single-level home with 3 bedrooms, 2 bathrooms and a study. Roughly how big should it be?',
-    missingFields: ['area'],
+    requirements: { area: null, floors: null, bedrooms: 3, bathrooms: null, extras: ['study'], style: 'scandinavian', notes: 'Lots of light, a home office.' },
+    assistantMessage: 'Lovely — a light-filled Scandinavian home with 3 bedrooms and a study. How many bathrooms would you like?',
+    missingFields: ['bathrooms'],
   },
   {
     status: 'complete',
-    requirements: { area: 150, floors: 1, bedrooms: 3, bathrooms: 2, extras: ['study', 'laundry'], style: 'scandinavian', notes: 'Lots of light, a home office.' },
-    assistantMessage: "Perfect, 150 m² works well for that. I've added a laundry too — check the details and generate when ready.",
+    requirements: { area: null, floors: null, bedrooms: 3, bathrooms: 2, extras: ['study', 'laundry', 'living-back'], style: 'scandinavian', notes: 'Lots of light, a home office, living facing the garden.' },
+    assistantMessage: "Perfect: 3 bedrooms, 2 bathrooms, a study, and the living room facing the garden. I've added a laundry too — check the details and generate when ready.",
     missingFields: [],
   },
 ];
