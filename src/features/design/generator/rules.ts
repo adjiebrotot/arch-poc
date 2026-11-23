@@ -25,7 +25,18 @@ export type RuleKind = 'shape' | 'size' | 'proportion' | 'placement';
 export type Severity = 'hard' | 'soft';
 export interface Issue { message: string; roomId?: string; level?: number; weight?: number }
 export interface RuleResult { id: string; title: string; kind: RuleKind; severity: Severity; why: string; ok: boolean; issues: Issue[] }
-export interface Report { results: RuleResult[]; hard: number; soft: number; penalty: number }
+export interface Report { results: RuleResult[]; hard: number; soft: number; penalty: number; byKind: Record<RuleKind, number> }
+
+/**
+ * A layout's score out of 100 (overall, or one family of rules): 100 with no penalty, falling
+ * smoothly as preference penalties add up; 0 when a hard rule is broken.
+ */
+export function designScore(r: Report, kind?: RuleKind): number {
+  if (r.hard) return 0;
+  const pen = kind ? r.byKind[kind] : r.penalty;
+  const k = kind ? 40 : 120;
+  return Math.round((100 * k) / (k + pen));
+}
 
 /** What a room is, from its type and name (the generator and the editor share these names). */
 export type Kind = 'garage' | 'entry' | 'living' | 'livingKitchen' | 'family' | 'kitchen' | 'dining' | 'study' | 'laundry' | 'wc' | 'bathroom'
@@ -74,6 +85,8 @@ export const DOOR_CLEAR = 0.8;
 /** Widest a hallway may be anywhere (m), and how far over its maximum a room may grow. */
 export const HALL_MAX = 2.6;
 export const OVERSIZE = 1.5;
+/** How far past its kind's proportion limit a room may stretch before it is a corridor. */
+export const ASPECT_HARD = 1.5;
 
 // ---------------------------------------------------------------------------------------------
 // geometry helpers on the finished plan
@@ -240,6 +253,16 @@ export const RULES: Rule[] = [
     id: 'hall-corridor', kind: 'shape', severity: 'hard', title: 'Hallways are corridors, not rooms',
     why: `A hallway wider than ${HALL_MAX} m anywhere is space nobody lives in: it should be a room, or part of one.`,
     check: (a) => a.rooms.filter((r) => r.kind === 'hall').flatMap((r) => (containsRect(r.local, HALL_MAX + 0.01, HALL_MAX + 0.01) ? [at(r, `is wider than ${HALL_MAX} m in places`)] : [])),
+  },
+  {
+    id: 'not-corridors', kind: 'shape', severity: 'hard', title: 'Rooms are not corridors',
+    why: `A room more than ${ASPECT_HARD} × longer than its kind allows (a 1.75 × 8 m bathroom, a 12 m deep kitchen) is a corridor with fittings in it.`,
+    check: (a) => a.rooms.flatMap((r) => {
+      const rule = ROOM_RULES[r.kind];
+      if (!rule) return [];
+      const ratio = Math.max(r.bboxW, r.bboxH) / Math.max(0.1, Math.min(r.bboxW, r.bboxH));
+      return ratio > rule.aspect * ASPECT_HARD ? [at(r, `${fmt(ratio)} : 1, a corridor`)] : [];
+    }),
   },
   {
     id: 'proportions', kind: 'shape', severity: 'soft', title: 'Rooms are not long and thin',
@@ -448,11 +471,61 @@ export const RULES: Rule[] = [
     check: (a) => a.rooms.filter((r) => r.kind === 'laundry').flatMap((r) => (a.rooms.some((o) => o.level === r.level && ['kitchen', 'livingKitchen', 'garage', 'bathroom', 'hall'].includes(o.kind) && sharedLength(r.room.polygon, o.room.polygon) >= 0.8) ? [] : [at(r, 'is far from the kitchen, garage and bathrooms', 3)])),
   },
   {
+    id: 'bedroom-noise', kind: 'placement', severity: 'soft', title: 'Bedrooms don\'t share a wall with the garage or living areas',
+    why: 'Security and quiet: car fumes and noise, the television and the kitchen are on the other side of a hallway or a cupboard, not of a bedroom wall.',
+    check: (a) => a.rooms.filter((r) => r.kind === 'master' || r.kind === 'bedroom').flatMap((r) => {
+      const loud = a.rooms.filter((o) => o.level === r.level && ['garage', 'living', 'livingKitchen', 'family', 'kitchen'].includes(o.kind) && sharedLength(r.room.polygon, o.room.polygon) >= 1);
+      return loud.map((o) => at(r, `shares a wall with the ${o.room.name.toLowerCase()}`, o.kind === 'garage' ? 4 : 2));
+    }),
+  },
+  {
+    id: 'bath-near-beds', kind: 'placement', severity: 'soft', title: 'Bathrooms are close to the bedrooms they serve',
+    why: 'Convenience at night: a shared bathroom within a few steps of the bedrooms on its floor.',
+    check: (a) => a.rooms.filter((r) => r.kind === 'bathroom').flatMap((r) => {
+      const beds = a.rooms.filter((o) => o.level === r.level && o.kind === 'bedroom');
+      if (!beds.length) return [];
+      const c = (x: RoomInfo) => { const n = x.room.polygon.length; return [x.room.polygon.reduce((t, p) => t + p[0], 0) / n, x.room.polygon.reduce((t, p) => t + p[1], 0) / n] as Vec2; };
+      const near = Math.min(...beds.map((b) => dist(c(b), c(r))));
+      return near > 8 ? [at(r, `is ${fmt(near)} m from the nearest bedroom`, (near - 8) * 0.8)] : [];
+    }),
+  },
+  {
     id: 'stairs-hall', kind: 'placement', severity: 'hard', title: 'Stairs open onto a hallway or landing',
     why: 'Stairs arriving inside a room turn it into a corridor.',
     check: (a) => a.rooms.filter((r) => r.kind === 'stairs').flatMap((r) => (doorsOf(a, r).some((d) => others(d, r).some((o) => o.kind === 'hall' || o.kind === 'entry' || o.kind === 'open')) ? [] : [at(r, 'doesn\'t open onto a hallway')])),
   },
+  {
+    id: 'stairs-stacked', kind: 'placement', severity: 'hard', title: 'Stairs line up on every level',
+    why: 'A stair is one object through the house: it must sit in exactly the same place on the floor below and the floor above, and every floor of a multi-storey home needs it.',
+    check: (a, plan) => {
+      if (plan.floors.length < 2) return [];
+      const out: Issue[] = [];
+      const levels = [...plan.floors].sort((x, y) => x.level - y.level);
+      const stairsOn = (lv: number) => a.rooms.filter((r) => r.kind === 'stairs' && r.level === lv);
+      for (const f of levels) if (!stairsOn(f.level).length) out.push({ message: `${floorLabel(f.level)}: there are no stairs`, level: f.level });
+      for (let i = 0; i + 1 < levels.length; i++) {
+        const lo = stairsOn(levels[i].level), hi = stairsOn(levels[i + 1].level);
+        for (const s of hi) {
+          // the same footprint below: overlapping almost entirely, about the same size
+          const match = lo.some((t) => Math.abs(t.room.area - s.room.area) < 0.5 && s.room.polygon.every((p) => pointInPolygon(p, t.room.polygon) || t.room.polygon.some((q) => dist(p, q) < 0.05) || distToEdge(p, t.room.polygon) < 0.05));
+          if (!match) out.push(at(s, `isn't above the stairs on ${floorLabel(levels[i].level).toLowerCase()}`));
+        }
+      }
+      return out;
+    },
+  },
 ];
+
+const distToEdge = (p: Vec2, poly: Vec2[]) => {
+  let best = Infinity;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    const dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2));
+    best = Math.min(best, Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy));
+  }
+  return best;
+};
 
 /** Check a plan against every rule. `penalty` ranks plans: hard rules count 100 each. */
 export function checkPlan(plan: PlanSpec): Report {
@@ -464,8 +537,11 @@ export function checkPlan(plan: PlanSpec): Report {
   });
   const hard = results.filter((r) => r.severity === 'hard').reduce((s, r) => s + r.issues.length, 0);
   const soft = results.filter((r) => r.severity === 'soft').reduce((s, r) => s + r.issues.length, 0);
-  const penalty = hard * 100 + results.filter((r) => r.severity === 'soft').reduce((s, r) => s + r.issues.reduce((t, i) => t + (i.weight ?? 1), 0), 0);
-  return { results, hard, soft, penalty };
+  const softPen = (r: RuleResult) => r.issues.reduce((t, i) => t + (i.weight ?? 1), 0);
+  const penalty = hard * 100 + results.filter((r) => r.severity === 'soft').reduce((s, r) => s + softPen(r), 0);
+  const byKind = { shape: 0, size: 0, proportion: 0, placement: 0 } as Record<RuleKind, number>;
+  for (const r of results) byKind[r.kind] += r.severity === 'soft' ? softPen(r) : r.issues.length * 100;
+  return { results, hard, soft, penalty, byKind };
 }
 
 export { dirToLocal };

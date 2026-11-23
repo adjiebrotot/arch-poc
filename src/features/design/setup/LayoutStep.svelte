@@ -7,8 +7,10 @@
   import { onMount, untrack } from 'svelte';
   import type { PlanSpec } from '@shared/planspec/schema';
   import type { Editor } from '../workspace/editor.svelte';
-  import { generateLayouts, suggestBriefs, envelopeOfPlan, applyLayout, type Brief, type Layouts, type BriefSuggestion } from '../generator/generator';
+  import { envelopeOfPlan, applyLayout, type Brief, type Layouts, type BriefSuggestion } from '../generator/generator';
+  import { layoutsAsync, suggestAsync } from '../generator/layoutClient';
   import { describe, envelopeOf } from '../generator/feasibility';
+  import { designScore } from '../generator/rules';
   import PlanThumb from '../PlanThumb.svelte';
   import DesignCheck from '../DesignCheck.svelte';
 
@@ -34,25 +36,33 @@
 
   function input() {
     const plan = $state.snapshot(editor.plan) as PlanSpec;
-    return { envelope: envelopeOfPlan(plan), ...brief, mode: plan.meta.mode, title: plan.meta.title };
+    // plain data (no reactive proxies): it is sent to the layout worker
+    const b = $state.snapshot(brief) as Brief;
+    return { envelope: envelopeOfPlan(plan), bedrooms: b.bedrooms, bathrooms: b.bathrooms, extras: [...b.extras], mode: plan.meta.mode, title: plan.meta.title };
   }
 
-  function run() {
+  let runId = 0;
+  async function run() {
+    const my = ++runId;
     busy = true;
     error = '';
     suggestions = null;
-    // let the spinner paint before the (synchronous) generator runs
-    setTimeout(() => {
-      try {
-        result = generateLayouts(input(), 4, 1 + batch * 32, 16);
-        chosen = 0;
-      } catch (e) {
-        error = e instanceof Error ? e.message : 'No layout fits these floors.';
-        result = null;
-      }
-      busy = false;
-      if (result && !result.plans.length) setTimeout(() => { suggestions = suggestBriefs(input(), 3); }, 40);
-    }, 40);
+    // generated in a worker: the page stays responsive while dozens of candidates are judged
+    try {
+      const r = await layoutsAsync(input(), 3, 1 + batch * 48, 24);
+      if (my !== runId) return;
+      result = r;
+      chosen = 0;
+    } catch (e) {
+      if (my !== runId) return;
+      error = e instanceof Error ? e.message : 'No layout fits these floors.';
+      result = null;
+    }
+    busy = false;
+    if (result && !result.plans.length) {
+      const sg = await suggestAsync(input(), 3).catch(() => []);
+      if (my === runId) suggestions = sg;
+    }
   }
   onMount(run);
 
@@ -111,14 +121,15 @@
         <div class="flex gap-2 flex-wrap"><button class="btn btn-soft btn-sm" onclick={onback}>← Change the brief</button></div>
       </div>
     {:else}
-      <div class="grid md:grid-cols-2 gap-4" role="radiogroup" aria-label="Layout variants">
+      <p class="text-sm text-muted">The {variants.length === 1 ? 'best layout' : `${variants.length} best layouts that differ from each other`}, out of {result?.considered} generated ({result?.compliant} met every rule). Scores count the preferences each one still misses.</p>
+      <div class="grid md:grid-cols-3 gap-4" role="radiogroup" aria-label="Layout variants">
         {#each variants as v, i}
           {@const rep = reports[i]}
           <button class="card p-3 text-left grid gap-2 {chosen === i ? 'outline outline-3 outline-accent border-accent' : 'hover:border-ink'}" role="radio" aria-checked={chosen === i} onclick={() => (chosen = i)} ondblclick={open}>
             <PlanThumb plan={v} />
-            <div class="px-1 text-sm flex justify-between gap-2"><span class="font-semibold">Layout {String.fromCharCode(65 + i)}</span><span class="text-muted">{v.floors.reduce((s, f) => s + f.rooms.filter((r) => r.type !== 'hallway' && r.type !== 'stairs').length, 0)} rooms</span></div>
+            <div class="px-1 text-sm flex justify-between gap-2"><span class="font-semibold">Layout {String.fromCharCode(65 + i)}</span>{#if rep}<span class="font-semibold" aria-label={`Score ${designScore(rep)} out of 100`}>{designScore(rep)}<span class="text-muted font-normal">/100</span></span>{/if}</div>
             {#if rep}
-              <div class="px-1 text-xs font-semibold text-ok">✓ All design rules met{rep.soft ? ` · ${rep.soft} suggestion${rep.soft === 1 ? '' : 's'}` : ''}</div>
+              <div class="px-1 text-xs flex justify-between gap-2"><span class="font-semibold text-ok">✓ All design rules met</span><span class="text-muted">{v.floors.reduce((s, f) => s + f.rooms.filter((r) => r.type !== 'hallway' && r.type !== 'stairs').length, 0)} rooms</span></div>
             {/if}
           </button>
         {/each}

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { generatePlan, generateLayouts, suggestBriefs, type Envelope } from '../src/features/design/generator/generator';
-import { checkPlan, kindOf, containsRect, RULES, ROOM_RULES, HALL_MAX, type Report } from '../src/features/design/generator/rules';
+import { generatePlan, generateLayouts, suggestBriefs, layoutFingerprint, layoutSimilarity, type Envelope } from '../src/features/design/generator/generator';
+import { checkPlan, kindOf, containsRect, designScore, RULES, ROOM_RULES, HALL_MAX, type Report } from '../src/features/design/generator/rules';
+import { simplifyPolygon } from '../src/shared/util/geometry';
 import { checkFeasibility } from '../src/features/design/generator/feasibility';
 import { footprintArea } from '../src/shared/planspec/envelope';
 import { normalizeSite, rectBoundary } from '../src/shared/planspec/site';
@@ -32,7 +33,7 @@ describe('design rules: the checker', () => {
   it('every rule says what it checks and why, in four families', () => {
     expect(new Set(RULES.map((r) => r.kind))).toEqual(new Set(['shape', 'size', 'proportion', 'placement']));
     for (const r of RULES) { expect(r.title.length).toBeGreaterThan(10); expect(r.why.length).toBeGreaterThan(20); }
-    expect(RULES.filter((r) => r.severity === 'hard').length).toBeGreaterThanOrEqual(18);
+    expect(RULES.filter((r) => r.severity === 'hard').length).toBeGreaterThanOrEqual(20);
   });
 
   // a generated plan that meets every rule, then broken one way at a time
@@ -99,6 +100,31 @@ describe('design rules: the checker', () => {
     expect(failed(checkPlan(h), 'hall-corridor').ok).toBe(false);
   });
 
+  it('a corridor-like room breaks the rules; a score sums up what is left', () => {
+    const p = clone(base);
+    const k = rooms(p).find((r) => r.type === 'kitchen')!;
+    const [x0, y0] = [Math.min(...k.polygon.map((v) => v[0])), Math.min(...k.polygon.map((v) => v[1]))];
+    k.polygon = rect(x0, y0, x0 + 2, y0 + 10);
+    expect(failed(checkPlan(p), 'not-corridors').issues.some((i) => i.roomId === k.id)).toBe(true);
+    expect(designScore(checkPlan(p))).toBe(0);
+    const good = checkPlan(base);
+    expect(designScore(good)).toBeGreaterThan(50);
+    expect(designScore(good)).toBeLessThanOrEqual(100);
+    for (const fam of ['shape', 'size', 'proportion', 'placement'] as const) expect(designScore(good, fam)).toBeGreaterThan(0);
+  });
+
+  it('stairs must sit in the same place on every level', () => {
+    const two = envelope(lot(18, 30), [[3, 8], [15, 8], [15, 22], [3, 22]], [[3, 8], [15, 8], [15, 18], [3, 18]]);
+    const [p0] = generateLayouts({ envelope: two, bedrooms: 3, bathrooms: 2, extras: ['laundry'] }, 1, 1, 16).plans;
+    expect(failed(checkPlan(p0), 'stairs-stacked').ok).toBe(true);
+    const p = clone(p0);
+    const up = p.floors[1].rooms.find((r) => r.type === 'stairs')!;
+    up.polygon = up.polygon.map(([x, y]) => [x + 1.5, y] as Vec2);
+    expect(failed(checkPlan(p), 'stairs-stacked').ok).toBe(false);
+    // single-storey homes have no stairs at all
+    expect(rooms(base).some((r) => r.type === 'stairs')).toBe(false);
+  }, 60_000);
+
   it('no front door, or no window in a bedroom, breaks the placement rules', () => {
     const p = clone(base);
     const f = p.floors[0];
@@ -152,6 +178,31 @@ describe('design rules: the generator follows them', () => {
       if (!r.plans.length) expect(r.closest!.report.hard).toBeGreaterThan(0);
     }
     expect(offered).toBeGreaterThan(10);
+  }, 120_000);
+
+  it('offers the three best layouts that differ from each other, with scores', () => {
+    for (const c of [CASES[0], CASES[2], CASES[7]]) {
+      const r = generateLayouts({ envelope: c.env, ...c.brief });
+      expect(r.plans.length).toBeLessThanOrEqual(3);
+      expect(r.considered).toBeGreaterThanOrEqual(24);
+      const fp = r.plans.map((p) => layoutFingerprint(p));
+      for (let i = 0; i < fp.length; i++) for (let j = i + 1; j < fp.length; j++) expect(layoutSimilarity(fp[i], fp[j])).toBeLessThan(0.97);
+      // best first
+      const scores = r.reports.map((x) => designScore(x));
+      expect(scores.every((x) => x > 0)).toBe(true);
+    }
+    // a layout is identical to itself, and a mirror image is not
+    const [p] = generateLayouts({ envelope: CASES[0].env, ...CASES[0].brief }, 1).plans;
+    expect(layoutSimilarity(layoutFingerprint(p), layoutFingerprint(p))).toBe(1);
+  }, 120_000);
+
+  it('main bedrooms are clean: a rectangle or a simple L, the ensuite and robe in one strip at an end', () => {
+    for (const c of CASES.slice(0, 6)) {
+      for (const p of generateLayouts({ envelope: c.env, ...c.brief }, 3, 1, 16).plans) {
+        const m = p.floors.flatMap((f) => f.rooms).find((r) => r.type === 'master')!;
+        expect(simplifyPolygon(m.polygon, 0.01).length).toBeLessThanOrEqual(6);
+      }
+    }
   }, 120_000);
 
   it('every generated garage is a rectangle a car fits in, with its door on the street', () => {

@@ -3,15 +3,15 @@
    * The design-rule report for a plan (generator/rules.ts): rules that are broken, suggestions, and
    * every rule with why it exists. Used under the generated layouts and in the workspace.
    */
-  import type { Report, RuleKind } from './generator/rules';
+  import { designScore, type Report, type RuleKind } from './generator/rules';
 
   let { report, onroom }: { report: Report; onroom?: (roomId: string, level?: number) => void } = $props();
 
   const FAMILIES: { kind: RuleKind; label: string }[] = [
-    { kind: 'shape', label: 'Shape' },
+    { kind: 'shape', label: 'Geometry' },
     { kind: 'size', label: 'Size' },
     { kind: 'proportion', label: 'Proportion' },
-    { kind: 'placement', label: 'Placement' },
+    { kind: 'placement', label: 'Placement & adjacency' },
   ];
   const hardRules = $derived(report.results.filter((r) => r.severity === 'hard'));
   const broken = $derived(hardRules.filter((r) => !r.ok));
@@ -23,6 +23,14 @@
     <p class="font-semibold text-ok">✓ Meets all {hardRules.length} design rules{notes.length ? ` · ${report.soft} suggestion${report.soft === 1 ? '' : 's'}` : ''}</p>
   {:else}
     <p class="font-semibold text-danger">⚠ {report.hard} problem{report.hard === 1 ? '' : 's'} with {broken.length} of {hardRules.length} design rules</p>
+  {/if}
+
+  {#if !broken.length}
+    <dl class="grid grid-cols-2 sm:grid-cols-4 gap-2" aria-label="Score by family of rules">
+      {#each FAMILIES as fam}
+        <div class="rounded-xl bg-paper-2 px-3 py-2"><dt class="text-xs text-muted">{fam.label}</dt><dd class="font-semibold">{designScore(report, fam.kind)}<span class="text-muted font-normal text-xs">/100</span></dd></div>
+      {/each}
+    </dl>
   {/if}
 
   {#if broken.length}

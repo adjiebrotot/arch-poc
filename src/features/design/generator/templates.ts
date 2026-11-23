@@ -41,12 +41,11 @@ export function fitTemplate(t: Template, env: Pick<ProgramInput, 'area' | 'floor
 const lot = (w: number, d: number): Site => normalizeSite({ width: w, depth: d, northAngle: 0, boundary: rectBoundary(0, 0, w, d), roads: [{ edge: 2 }], entrance: { edge: 2, t: 0.5 }, source: 'grid' });
 
 /**
- * Demo envelopes (street at the bottom): an L-shaped single-storey home on a 24 × 34 m lot, a
- * broader L for the Entertainer (its deep living wing needs the width), a two-storey townhouse and
- * a small cottage.
+ * Demo envelopes (street at the bottom): an L-shaped single-storey home on a 24 × 34 m lot, a wide
+ * 20 × 13 m single storey for the Entertainer, a two-storey townhouse and a small cottage.
  */
 export function demoEnvelope(kind: 'family' | 'entertainer' | 'townhouse' | 'cottage' = 'family'): Envelope {
-  if (kind === 'entertainer') return { site: lot(24, 34), floors: [{ level: 0, height: 2.7, footprint: [[3, 6], [21, 6], [21, 18], [13, 18], [13, 23], [3, 23]] }] };
+  if (kind === 'entertainer') return { site: lot(24, 34), floors: [{ level: 0, height: 2.7, footprint: [[2, 6], [22, 6], [22, 19], [2, 19]] }] };
   if (kind === 'townhouse') {
     const g: Vec2[] = [[3, 8], [15, 8], [15, 22], [3, 22]];
     const u: Vec2[] = [[3, 8], [15, 8], [15, 18], [3, 18]];

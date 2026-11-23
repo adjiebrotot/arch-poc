@@ -602,6 +602,8 @@ function layoutFloor(ctx: Ctx, fi: number, program: FloorProgram, segs: Band[], 
   const segAt = new Int16Array(N).fill(-1), sideAt = new Int8Array(N), sAt = new Int32Array(N), depAt = new Int32Array(N);
   /** cells no hallway side reaches directly (past a hallway's end, behind the stairs…) */
   const pocket = new Uint8Array(N);
+  /** pockets cut off the deep part of a strip: they may become rooms of their own */
+  const deepPocket = new Uint8Array(N);
   const claim = (k: number, si: number, side: number, sv: number, d: number) => { segAt[k] = si; sideAt[k] = side; sAt[k] = sv; depAt[k] = d; };
   segs.forEach((b, si) => {
     for (const side of [0, 1]) {
@@ -691,6 +693,23 @@ function layoutFloor(ctx: Ctx, fi: number, program: FloorProgram, segs: Band[], 
   // a region too narrow along its hallway for any room (a column beside a slanted wall…) joins a
   // neighbour as a pocket
   for (const r of regions) if (r.area > 0 && new Set(r.s.values()).size * CELL < 1.5) { for (const k of r.cells) pocket[k] = 1; r.area = 0; }
+  // a strip with a much deeper part (the leg of an L): rooms take the strip's normal depth, and
+  // the deep remainder becomes a room of its own behind them, not 12 m deep slices
+  for (const r of regions) {
+    if (r.area <= 0) continue;
+    const per = new Map<number, number>();
+    for (const k of r.cells) per.set(r.s.get(k)!, Math.max(per.get(r.s.get(k)!) ?? 0, r.depth.get(k)!));
+    const ds = [...per.values()].sort((x, y) => x - y);
+    // the strip's normal room depth: its shallower quarter, at least a bedroom's depth
+    const med = Math.min(Math.round(DMAX / CELL), Math.max(Math.round(3 / CELL), ds[ds.length >> 2]));
+    if (ds[ds.length - 1] - med < Math.round(3 / CELL)) continue;
+    const deep = r.cells.filter((k) => r.depth.get(k)! > med && per.get(r.s.get(k)!)! - med >= Math.round(3 / CELL));
+    if (deep.length * CELL * CELL < 9) continue;
+    const deepSet = new Set(deep);
+    for (const k of deep) { pocket[k] = 1; deepPocket[k] = 1; }
+    r.cells = r.cells.filter((k) => !deepSet.has(k));
+    r.area = r.cells.length * CELL * CELL;
+  }
   const usable = regions.filter((r) => r.area >= 5).sort((a, b) => (prefs.livingBack && fi === 0 ? a.front - b.front : b.front - a.front));
   let seq = sequence(program.rooms, rng, prefs.livingBack && fi === 0);
   const total = usable.reduce((s, r) => s + r.area, 0);
@@ -953,11 +972,27 @@ function layoutFloor(ctx: Ctx, fi: number, program: FloorProgram, segs: Band[], 
       const far = own.filter((k) => reg.depth.get(k)! > need);
       if (!far.length) return;
       const pref = (x: RoomSpec) => (x.type === 'master' ? 3 : FLEX.has(x.type) ? 2 : x.type === 'bedroom' ? 0 : 1);
-      const nbs = [i - 1, i + 1].filter((x) => x >= 0 && x < m && !list[x].compact).sort((a, b) => pref(list[b]) - pref(list[a]) || list[b].target - list[a].target);
+      // the nearest room along the strip that isn't a small wet room (past a laundry beside a
+      // bathroom, say): the far parts of everything in between go to it, so they stay connected
+      const direct = [i - 1, i + 1].filter((x) => x >= 0 && x < m && !list[x].compact).sort((a, b) => pref(list[b]) - pref(list[a]) || list[b].target - list[a].target);
+      const nbs = direct.length ? direct : [-1, 1].map((dir) => { let x = i + dir; while (x >= 0 && x < m && list[x].compact) x += dir; return x >= 0 && x < m ? x : -1; })
+        .filter((x) => x >= 0).sort((a, b) => Math.abs(a - i) - Math.abs(b - i) || pref(list[b]) - pref(list[a]) || list[b].target - list[a].target);
       if (!nbs.length) return;
-      for (const k of far) owner[k] = ids[nbs[0]];
-      expected[ids[nbs[0]]] += far.length * CELL * CELL;
-      expected[id] -= far.length * CELL * CELL;
+      const to = nbs[0];
+      const moved: [number, number][] = [];
+      for (let x = Math.min(i, to) + 1; x < Math.max(i, to); x++) {
+        if (x === i) continue;
+        for (const k of reg.cells) if (owner[k] === ids[x] && reg.depth.get(k)! > need) moved.push([k, ids[x]]);
+      }
+      for (const k of far) moved.push([k, id]);
+      for (const [k] of moved) owner[k] = ids[to];
+      // past other small rooms only if the room taking it all stays a sensible size and shape
+      if (!direct.length) {
+        let n = 0;
+        for (const k of reg.cells) if (owner[k] === ids[to]) n++;
+        if (n * CELL * CELL > maxOf(list[to]) || gridCorners(g, owner, ids[to]) > 6) { for (const [k, o] of moved) owner[k] = o; return; }
+      }
+      for (const [, o] of moved) { expected[ids[to]] += CELL * CELL; expected[o] -= CELL * CELL; }
     });
   });
 
@@ -1022,6 +1057,24 @@ function layoutFloor(ctx: Ctx, fi: number, program: FloorProgram, segs: Band[], 
             }
             plans.push({ ens, robe }, { ens, robe: [] });
           }
+          // best: a full-depth strip at one end of the room, the robe by the hallway and the ensuite
+          // behind it, no gap: the bedroom stays a clean rectangle (next to a wet room if possible)
+          for (const start of [atStart, !atStart]) {
+            for (const sw of [6, 7, 8]) {
+              if (w - sw < bedMin) continue;
+              const cols = new Set(start ? mine.slice(0, sw) : mine.slice(w - sw));
+              const maxEns = Math.floor(ROOM_RULES.ensuite!.max / (sw * CELL * CELL));
+              for (const withRobe of [true, false]) {
+                const robeD = withRobe ? Math.max(6, maxD - maxEns) : 0;
+                if (!withRobe && maxD > maxEns) continue;
+                if (withRobe && (robeD * sw * CELL * CELL > ROOM_RULES.robe!.max || maxD - robeD < 8)) continue;
+                plans.push({
+                  ens: own.filter((k) => cols.has(colOf(k)) && reg.depth.get(k)! > robeD),
+                  robe: robeD ? own.filter((k) => cols.has(colOf(k)) && reg.depth.get(k)! <= robeD) : [],
+                });
+              }
+            }
+          }
           // a strip at one end of the room: the robe by the hallway, the ensuite against the far wall
           for (const start of [atStart, !atStart]) {
             for (const withRobe of [true, false]) {
@@ -1056,6 +1109,12 @@ function layoutFloor(ctx: Ctx, fi: number, program: FloorProgram, segs: Band[], 
             let touch = 0;
             for (let k = 0; k < N; k++) if (owner[k] === id) { const ii = k % g.nx; for (const n2 of [ii > 0 ? k - 1 : -1, ii < g.nx - 1 ? k + 1 : -1, k - g.nx, k + g.nx]) if (n2 >= 0 && n2 < N && owner[n2] === HALL) touch++; }
             if (touch < 5) bad += 100;
+            // a cleaner bedroom is better: every corner past a rectangle costs; plumbing next to
+            // another wet room is a plus
+            const corners = gridCorners(g, owner, id, F.cov);
+            bad += Math.max(0, corners - 4) * 4;
+            const wetNext = pl.ens.some((k) => { const ii = k % g.nx; return [ii > 0 ? k - 1 : -1, ii < g.nx - 1 ? k + 1 : -1, k - g.nx, k + g.nx].some((n2) => n2 >= 0 && n2 < N && owner[n2] >= 2 && owner[n2] !== id && owner[n2] < rooms.length && ['bathroom', 'laundry', 'wc', 'ensuite'].includes(rooms[owner[n2]].type)); });
+            if (wetNext) bad -= 3;
             for (const k of [...pl.ens, ...pl.robe]) owner[k] = id;
             return bad + (pl.robe.length ? 0 : 3) + order * 0.01;
           };
@@ -1120,6 +1179,29 @@ function layoutFloor(ctx: Ctx, fi: number, program: FloorProgram, segs: Band[], 
         for (const k of comp) owner[k] = FREE;
         if (okShape) { best = o; break; }
       }
+      // too big for the room it would join (an L's leg behind its front rooms): a room of its own,
+      // reached through a living space or the hallway; split in two if it is very big
+      const A = comp.length * CELL * CELL;
+      const joinMax = best >= 2 ? (ROOM_RULES[kindOf(rooms[best])]?.max ?? 99) * 1.2 : 99;
+      const curA = best >= 2 ? cellsOfOwner(best) * CELL * CELL : 0;
+      const transit = ranked.filter((o) => o === HALL || ['living', 'kitchen', 'dining', 'entry'].includes(rooms[o]?.type));
+      if (A >= 9 && comp.some((k) => deepPocket[k]) && (best < 2 || curA + A > joinMax) && transit.length) {
+        const viaHall = transit.includes(HALL);
+        // two rooms only if each one opens onto the hallway or a living space
+        const opensOnto = (part: number[]) => part.some((k) => { const i = k % g.nx; return [i > 0 ? k - 1 : -1, i < g.nx - 1 ? k + 1 : -1, k - g.nx, k + g.nx].some((n) => n >= 0 && n < N && (owner[n] === HALL || ['living', 'kitchen', 'dining', 'entry'].includes(rooms[owner[n]]?.type))); });
+        let parts = A > 36 ? halves(g, comp) : [comp];
+        if (parts.length > 1 && !parts.every(opensOnto)) parts = [comp];
+        for (const part of parts) {
+          const big = part.length * CELL * CELL >= 11;
+          const spec: Laid = fi === 0
+            ? (big && !rooms.some((x) => x.name === 'Family room') ? { name: 'Family room', type: 'living', target: part.length * CELL * CELL, minW: 3 } : viaHall || big ? { name: 'Study nook', type: 'study', target: part.length * CELL * CELL, minW: 2.4 } : { name: 'Storage', type: 'other', target: part.length * CELL * CELL, minW: 1.2 })
+            : { name: big ? 'Retreat' : 'Storage', type: 'other', target: part.length * CELL * CELL, minW: 2.4 };
+          const id = rooms.push(spec) - 1;
+          for (const k of part) owner[k] = id;
+          expected[id] = part.length * CELL * CELL;
+        }
+        continue;
+      }
       if (best >= 0) { for (const k of comp) owner[k] = best; expected[best] = (expected[best] ?? 0) + comp.length * CELL * CELL; }
     }
   }
@@ -1172,6 +1254,7 @@ function layoutFloor(ctx: Ctx, fi: number, program: FloorProgram, segs: Band[], 
     strict.delete(id);
   }
   if (fi === 0) entryToStreet(ctx, F, owner, rooms, strict);
+  optimiseLayout(g, F, owner, rooms, expected, strict);
   // a second or third filler of the same kind on one floor gets another name of that kind
   const ALT: Record<string, string[]> = { 'Study nook': ['Home office', 'Hobby room'], Retreat: ['Sitting room'], 'Sitting room': ['Lounge'] };
   const seen = new Map<string, number>();
@@ -1187,6 +1270,159 @@ function layoutFloor(ctx: Ctx, fi: number, program: FloorProgram, segs: Band[], 
     names.add(r.name);
   });
   return { owner, rooms, expected };
+}
+
+// ---------------------------------------------------------------------------------------------
+// optimisation: the layout as an objective, improved by moving walls
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The layout of one floor as an optimisation problem. The objective adds up, per room:
+ *  - constraints (heavy): under its minimum area, no clear rectangle, more than 8 corners, a
+ *    corridor-like proportion, a rectangle-only room that isn't one, grossly oversized;
+ *  - geometry: corners past a rectangle, proportions past its kind's limit;
+ *  - size: distance from the size the programme wanted;
+ * and across rooms (proportion constraints): the main bedroom is the largest bedroom, bathrooms
+ * are smaller than bedrooms, a laundry or storeroom is never bigger than a bedroom.
+ * A local search then moves walls between neighbouring rooms 25 cm at a time (a whole face of
+ * cells from one room to the other), keeping every room in one piece, rectangles rectangular,
+ * every room's way into the hallway and its outside wall, and accepts the best improving move
+ * until none is left.
+ */
+function optimiseLayout(g: Grid, F: FloorCtx, owner: Int16Array, rooms: Laid[], expected: number[], strict: Set<number>) {
+  const N = owner.length, C2 = CELL * CELL;
+  const nb4 = (k: number): number[] => { const i = k % g.nx; return [i > 0 ? k - 1 : -1, i < g.nx - 1 ? k + 1 : -1, k - g.nx, k + g.nx].filter((n) => n >= 0 && n < N); };
+  const cells = new Map<number, Set<number>>();
+  for (let k = 0; k < N; k++) if (owner[k] >= 2) { const o = owner[k]; if (!cells.has(o)) cells.set(o, new Set()); cells.get(o)!.add(k); }
+  const movable = (o: number) => o >= 2 && rooms[o] && rooms[o].type !== 'garage' && rooms[o].type !== 'hallway';
+  const kindAt = (o: number) => kindOf(rooms[o]);
+  const box = (cs: Set<number>) => {
+    let i0 = g.nx, i1 = -1, j0 = g.ny, j1 = -1;
+    for (const k of cs) { const i = k % g.nx, j = (k - i) / g.nx; if (i < i0) i0 = i; if (i > i1) i1 = i; if (j < j0) j0 = j; if (j > j1) j1 = j; }
+    return { i0, i1, j0, j1 };
+  };
+  const clearIn = (cs: Set<number>, a: number, b: number) => {
+    const { i0, i1, j0, j1 } = box(cs);
+    const W = i1 - i0 + 1, H = j1 - j0 + 1;
+    if (W < Math.min(a, b) || H < Math.min(a, b)) return false;
+    const P = new Int32Array((W + 1) * (H + 1));
+    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) { const k = (j0 + j) * g.nx + i0 + i; P[(j + 1) * (W + 1) + i + 1] = (cs.has(k) && F.cov[k] >= 0.99 ? 1 : 0) + P[j * (W + 1) + i + 1] + P[(j + 1) * (W + 1) + i] - P[j * (W + 1) + i]; }
+    const fits = (w: number, h: number) => { for (let y = 0; y + h <= H; y++) for (let x = 0; x + w <= W; x++) if (P[(y + h) * (W + 1) + x + w] - P[y * (W + 1) + x + w] - P[(y + h) * (W + 1) + x] + P[y * (W + 1) + x] === w * h) return true; return false; };
+    return fits(a, b) || fits(b, a);
+  };
+  const corners = (cs: Set<number>) => {
+    const { i0, i1, j0, j1 } = box(cs);
+    let slanted = false;
+    for (const k of cs) if (F.cov[k] < 0.99) { slanted = true; break; }
+    const at = (i: number, j: number) => { if (i < i0 || j < j0 || i > i1 || j > j1) return 0; const k = j * g.nx + i; return cs.has(k) || (slanted && owner[k] === NONE) ? 1 : 0; };
+    let c = 0;
+    for (let j = j0; j <= j1 + 1; j++) for (let i = i0; i <= i1 + 1; i++) {
+      const a = at(i - 1, j - 1), b = at(i, j - 1), d = at(i - 1, j), e = at(i, j), n = a + b + d + e;
+      if (n === 1 || n === 3) c++; else if (n === 2 && a === e) c += 2;
+    }
+    return c + (slanted ? 1 : 0);
+  };
+  const suiteArea = (o: number) => (rooms[o].spec?.suite ? 0 : 0);
+  const roomPen = (o: number): number => {
+    const cs = cells.get(o);
+    if (!cs || !cs.size) return 0;
+    const rule = ROOM_RULES[kindAt(o)];
+    const A = cs.size * C2;
+    let pen = 0;
+    if (rule) {
+      if (A < rule.min) pen += 60 + (rule.min - A) * 20;
+      if (A > rule.max * 1.5) pen += 60 + (A - rule.max * 1.5) * 5;
+      else if (A > rule.max) pen += (A - rule.max) * 1.5;
+      const ca = Math.ceil(Math.min(...rule.clear) / CELL - 1e-6), cb = Math.ceil(Math.max(...rule.clear) / CELL - 1e-6);
+      if (!clearIn(cs, ca, cb)) pen += 60;
+      const b2 = box(cs), w = (b2.i1 - b2.i0 + 1) * CELL, h = (b2.j1 - b2.j0 + 1) * CELL, ratio = Math.max(w, h) / Math.min(w, h);
+      if (ratio > rule.aspect * 1.5) pen += 60 + (ratio - rule.aspect * 1.5) * 20;
+      else if (ratio > rule.aspect) pen += (ratio - rule.aspect) * 6;
+    }
+    const c = corners(cs);
+    if (c > 8) pen += 60 + (c - 8) * 5;
+    pen += Math.max(0, c - 4) * 1.5;
+    if (strict.has(o)) { const b2 = box(cs); if (cs.size !== (b2.i1 - b2.i0 + 1) * (b2.j1 - b2.j0 + 1) && !cs.size) pen += 0; }
+    const want = expected[o] || rooms[o].target;
+    if (want > 0) pen += (Math.abs(A - want) / want) * 3;
+    return pen + suiteArea(o);
+  };
+  const globalPen = (): number => {
+    let pen = 0;
+    const area = (o: number) => (cells.get(o)?.size ?? 0) * C2;
+    const ids = [...cells.keys()].filter((o) => cells.get(o)!.size);
+    const beds = ids.filter((o) => kindAt(o) === 'bedroom').map(area);
+    const master = ids.find((o) => kindAt(o) === 'master');
+    const smallest = beds.length ? Math.min(...beds) : master !== undefined ? area(master) : Infinity;
+    if (master !== undefined) for (const b of beds) if (b > area(master) + 0.3) pen += 40 + (b - area(master)) * 5;
+    for (const o of ids) {
+      const k = kindAt(o);
+      if (k === 'bathroom' && area(o) > smallest * 0.8) pen += 30 + (area(o) - smallest * 0.8) * 5;
+      if ((k === 'laundry' || k === 'wc' || k === 'storage') && area(o) > smallest) pen += 30;
+    }
+    return pen;
+  };
+  // the cheap guards a move must keep
+  const touches = (cs: Set<number>, pred: (n: number) => boolean) => { let t = 0; for (const k of cs) for (const n of nb4(k)) if (!cs.has(n) && pred(n)) t++; return t; };
+  const hallTouch = (o: number) => touches(cells.get(o)!, (n) => owner[n] === HALL || owner[n] === STAIRS);
+  const outside = (o: number) => touches(cells.get(o)!, (n) => owner[n] === NONE) + [...cells.get(o)!].filter((k) => { const i = k % g.nx, j = (k - i) / g.nx; return i === 0 || j === 0 || i === g.nx - 1 || j === g.ny - 1; }).length;
+  const connected = (cs: Set<number>) => {
+    if (!cs.size) return false;
+    const start = cs.values().next().value as number;
+    const seen = new Set([start]), st = [start];
+    while (st.length) { const k = st.pop()!; for (const n of nb4(k)) if (cs.has(n) && !seen.has(n)) { seen.add(n); st.push(n); } }
+    return seen.size === cs.size;
+  };
+  const isRect = (cs: Set<number>) => { const b2 = box(cs); return cs.size === (b2.i1 - b2.i0 + 1) * (b2.j1 - b2.j0 + 1); };
+  const needsWindow = (o: number) => ['master', 'bedroom', 'living', 'livingKitchen', 'family', 'kitchen', 'dining', 'study', 'retreat'].includes(kindAt(o));
+  const pens = new Map<number, number>();
+  for (const o of cells.keys()) pens.set(o, roomPen(o));
+  let gp = globalPen();
+  const dirs = [1, -1, g.nx, -g.nx];
+  for (let iter = 0; iter < 30; iter++) {
+    // work on the rooms that break a constraint (and their neighbours), worst first
+    const bad = [...pens.entries()].filter(([o, v]) => v >= 30 && movable(o)).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([o]) => o);
+    if (!bad.length && gp < 30) break;
+    const focus = new Set(bad);
+    if (gp >= 30) for (const o of cells.keys()) if (['master', 'bedroom', 'bathroom', 'laundry', 'wc', 'storage'].includes(kindAt(o))) focus.add(o);
+    let best: { from: number; to: number; slab: number[]; delta: number } | null = null;
+    for (const r of focus) {
+      const rc = cells.get(r);
+      if (!rc || !movable(r)) continue;
+      const nbs = new Set<number>();
+      for (const k of rc) for (const n of nb4(k)) if (owner[n] !== r && movable(owner[n])) nbs.add(owner[n]);
+      for (const b of nbs) {
+        for (const [from, to] of [[r, b], [b, r]]) {
+          const fc = cells.get(from)!, tc = cells.get(to)!;
+          for (const d of dirs) {
+            // the face of `from` towards `to` in direction d: those cells move over
+            const slab: number[] = [];
+            for (const k of fc) { const n = k + d; if (n < 0 || n >= N || (Math.abs(d) === 1 && Math.floor(n / g.nx) !== Math.floor(k / g.nx))) continue; if (owner[n] === to) slab.push(k); }
+            if (!slab.length || slab.length >= fc.size) continue;
+            for (const k of slab) { fc.delete(k); tc.add(k); owner[k] = to; }
+            let ok = connected(fc) && connected(tc);
+            if (ok && strict.has(from)) ok = isRect(fc);
+            if (ok && strict.has(to)) ok = isRect(tc);
+            if (ok) ok = hallTouch(from) >= 4 || ['ensuite', 'robe'].includes(kindAt(from));
+            if (ok && needsWindow(from)) ok = outside(from) > 0;
+            let delta = 0;
+            if (ok) {
+              const pf = roomPen(from), pt = roomPen(to), g2 = globalPen();
+              delta = pf + pt + g2 - (pens.get(from)! + pens.get(to)! + gp);
+              if (delta < -0.5 && (!best || delta < best.delta)) best = { from, to, slab: [...slab], delta };
+            }
+            for (const k of slab) { tc.delete(k); fc.add(k); owner[k] = from; }
+          }
+        }
+      }
+    }
+    if (!best) break;
+    const fc = cells.get(best.from)!, tc = cells.get(best.to)!;
+    for (const k of best.slab) { fc.delete(k); tc.add(k); owner[k] = best.to; expected[best.to] = (expected[best.to] ?? 0) + C2; expected[best.from] = (expected[best.from] ?? 0) - C2; }
+    pens.set(best.from, roomPen(best.from));
+    pens.set(best.to, roomPen(best.to));
+    gp = globalPen();
+  }
 }
 
 /**
@@ -1272,19 +1508,19 @@ function entryToStreet(ctx: Ctx, F: FloorCtx, owner: Int16Array, rooms: Laid[], 
         if ((w < hi && d < hi) || w * d * CELL * CELL > rule.max) continue;
         const r: Rect = { i0, i1, j0: jb - d + 1, j1: jb };
         if (r.j0 < 0) break;
+        // it opens onto the hallway, at least 1 m of shared wall (checked first: cheap)
+        let touch = 0;
+        for (let i = r.i0; i <= r.i1; i++) if (r.j0 > 0 && owner[(r.j0 - 1) * g.nx + i] === HALL) touch++;
+        for (let j = r.j0; j <= r.j1; j++) { if (r.i0 > 0 && owner[j * g.nx + r.i0 - 1] === HALL) touch++; if (r.i1 < g.nx - 1 && owner[j * g.nx + r.i1 + 1] === HALL) touch++; }
         let ok = true, c = 0;
         const taken = new Map<number, number>();
-        for (const k of rectCells(g, r)) {
-          const o = owner[k];
+        for (let j = r.j0; j <= r.j1 && ok; j++) for (let i = r.i0; i <= r.i1; i++) {
+          const k = j * g.nx + i, o = owner[k];
           if (!F.core[k] || o < 0 || o === STAIRS || (o !== id && strict.has(o))) { ok = false; break; }
           c += cost(o);
           taken.set(o, (taken.get(o) ?? 0) + 1);
         }
         if (!ok) break;
-        // it opens onto the hallway, at least 1 m of shared wall
-        let touch = 0;
-        for (let i = r.i0; i <= r.i1; i++) if (r.j0 > 0 && owner[(r.j0 - 1) * g.nx + i] === HALL) touch++;
-        for (let j = r.j0; j <= r.j1; j++) { if (r.i0 > 0 && owner[j * g.nx + r.i0 - 1] === HALL) touch++; if (r.i1 < g.nx - 1 && owner[j * g.nx + r.i1 + 1] === HALL) touch++; }
         if (touch < 4) continue;
         if ([...taken].some(([o, n]) => o !== id && o !== HALL && n > (sizeOf.get(o) ?? 0) * 0.4)) continue;
         const cc = cellCentre(g, r.j0 * g.nx + r.i0);
@@ -1388,6 +1624,17 @@ function bestRect(g: Grid, owner: Int16Array, id: number, access: number, a: num
     if (ok.size === off.length) return r;
   }
   return null;
+}
+
+/** A patch of cells cut in two across its longer side. */
+function halves(g: Grid, cells: number[]): number[][] {
+  let i0 = g.nx, i1 = -1, j0 = g.ny, j1 = -1;
+  for (const k of cells) { const i = k % g.nx, j = (k - i) / g.nx; i0 = Math.min(i0, i); i1 = Math.max(i1, i); j0 = Math.min(j0, j); j1 = Math.max(j1, j); }
+  const wide = i1 - i0 >= j1 - j0;
+  const mid = wide ? (i0 + i1 + 1) / 2 : (j0 + j1 + 1) / 2;
+  const a: number[] = [], b: number[] = [];
+  for (const k of cells) { const i = k % g.nx, j = (k - i) / g.nx; ((wide ? i : j) < mid ? a : b).push(k); }
+  return [a, b].filter((x) => x.length);
 }
 
 /**
@@ -2050,6 +2297,41 @@ export interface Layouts {
   reports: Report[];
   /** when nothing meets the rules: the closest attempt and what it breaks (never offered as a layout) */
   closest: { plan: PlanSpec; report: Report } | null;
+  /** how many layouts were generated, and how many of them met every rule */
+  considered: number;
+  compliant: number;
+}
+
+/**
+ * What a layout looks like, coarsely: the kind of room at every point of a 0.5 m lattice over each
+ * floor. Two layouts with the same rooms in the same places have the same fingerprint.
+ */
+export function layoutFingerprint(p: PlanSpec, step = 0.5): string[][] {
+  return p.floors.map((f) => {
+    const pts = f.footprint ?? f.rooms.flatMap((r) => r.polygon);
+    const xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]);
+    const out: string[] = [];
+    for (let y = Math.min(...ys) + step / 2; y < Math.max(...ys); y += step) {
+      for (let x = Math.min(...xs) + step / 2; x < Math.max(...xs); x += step) {
+        const r = f.rooms.find((rm) => pointInPolygon([x, y], rm.polygon));
+        out.push(r ? kindOf(r) : '');
+      }
+    }
+    return out;
+  });
+}
+
+/** Share (0–1) of the floor where two layouts of the same floors put the same kind of room. */
+export function layoutSimilarity(a: string[][], b: string[][]): number {
+  let same = 0, n = 0;
+  for (let f = 0; f < Math.min(a.length, b.length); f++) {
+    for (let i = 0; i < Math.min(a[f].length, b[f].length); i++) {
+      if (!a[f][i] && !b[f][i]) continue;
+      n++;
+      if (a[f][i] === b[f][i]) same++;
+    }
+  }
+  return n ? same / n : 1;
 }
 
 /**
@@ -2058,7 +2340,7 @@ export interface Layouts {
  * compliant ones. A layout that breaks a hard rule is never returned as a plan; when none is
  * compliant, `closest` says how near the best attempt came (for the explanation).
  */
-export function generateLayouts(input: Omit<GeneratorInput, 'seed'>, count = 4, baseSeed = 1, tries = 16, maxTries = tries * 2): Layouts {
+export function generateLayouts(input: Omit<GeneratorInput, 'seed'>, count = 3, baseSeed = 1, tries = 24, maxTries = tries * 2): Layouts {
   const found: (Candidate & { report: Report; rank: number })[] = [];
   const seen = new Set<string>();
   let clean = 0, error: unknown = null;
@@ -2075,18 +2357,24 @@ export function generateLayouts(input: Omit<GeneratorInput, 'seed'>, count = 4, 
   }
   if (!found.length) throw error instanceof Error ? error : new Error('No layout fits these footprints.');
   found.sort((a, b) => a.report.hard - b.report.hard || a.rank - b.rank);
-  const plans: PlanSpec[] = [], reports: Report[] = [];
-  const sigs = new Set<string>();
-  for (const c of found) {
-    if (c.report.hard) break;
-    const sig = planSignature(c.plan);
-    if (sigs.has(sig)) continue;
-    sigs.add(sig);
-    plans.push(c.plan);
-    reports.push(c.report);
-    if (plans.length >= count) break;
+  // the best ones that differ: each next layout is the best-scoring one that isn't too similar to
+  // those already picked (mirror images and different arrangements count as different)
+  const ok = found.filter((c) => !c.report.hard);
+  const prints = ok.map((c) => layoutFingerprint(c.plan));
+  const picked: number[] = [];
+  for (const cap of [0.8, 0.9, 0.97]) {
+    for (let i = 0; i < ok.length && picked.length < count; i++) {
+      if (picked.includes(i)) continue;
+      if (picked.every((j) => layoutSimilarity(prints[i], prints[j]) < cap)) picked.push(i);
+    }
+    if (picked.length >= count) break;
   }
-  return { plans, reports, closest: plans.length ? null : { plan: found[0].plan, report: found[0].report } };
+  picked.sort((a, b) => a - b);
+  return {
+    plans: picked.map((i) => ok[i].plan), reports: picked.map((i) => ok[i].report),
+    closest: picked.length ? null : { plan: found[0].plan, report: found[0].report },
+    considered: found.length, compliant: ok.length,
+  };
 }
 
 export interface BriefSuggestion { brief: Brief; label: string; change: string }
@@ -2123,7 +2411,7 @@ export function suggestBriefs(input: Omit<GeneratorInput, 'seed'>, max = 3, budg
     if (out.length >= max || Date.now() - t0 > budgetMs) break;
     if (!checkFeasibility({ area, floors: plates.length, plates, ...c.brief }).ok) continue;
     try {
-      const r = generateLayouts({ ...input, ...c.brief }, 1, 1, 8, 12);
+      const r = generateLayouts({ ...input, ...c.brief }, 1, 1, 8, 16);
       if (r.plans.length) out.push({ brief: c.brief, label: describe({ ...c.brief, floors: plates.length }), change: briefChange(input, c.brief) });
     } catch { /* this brief doesn't fit either */ }
   }
