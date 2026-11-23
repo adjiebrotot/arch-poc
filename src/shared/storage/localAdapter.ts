@@ -47,7 +47,7 @@ export class LocalStorageAdapter implements StorageAdapter {
   async savePlan(id: string, plan: PlanSpec): Promise<void> {
     safeSet(P + 'plan:' + id, JSON.stringify(plan));
     const list = readJSON<PlanRecord[]>(P + 'plans', []).filter((p) => p.id !== id);
-    list.push({ id, title: plan.meta.title, mode: plan.meta.mode, updatedAt: new Date().toISOString() });
+    list.push({ id, title: plan.meta.title, mode: plan.meta.mode, updatedAt: new Date().toISOString(), ...(plan.meta.stage ? { stage: plan.meta.stage } : {}) });
     safeSet(P + 'plans', JSON.stringify(list));
   }
   async deletePlan(id: string): Promise<void> {

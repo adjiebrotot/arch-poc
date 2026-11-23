@@ -6,6 +6,8 @@ export interface PlanRecord {
   title: string;
   mode: PlanSpec['meta']['mode'];
   updatedAt: string;
+  /** where the plan is in the workflow (missing: older plans, open in the workspace) */
+  stage?: PlanSpec['meta']['stage'];
 }
 
 /**

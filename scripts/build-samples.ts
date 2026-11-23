@@ -1,5 +1,6 @@
 /**
- * Bakes the demo content from the seeded "Family Home" template:
+ * Bakes the demo content from the seeded "Family Home" template, generated inside its demo
+ * envelope (an L-shaped single-storey footprint on a 24 × 34 m lot, see templates.ts):
  *   npx tsx scripts/build-samples.ts
  *   → public/samples/family-home.glb             (sample GLB for the viewer)
  *   → public/samples/example-design-bundle.json  (plan + pinned comments for the workspace)
@@ -90,7 +91,7 @@ const pid = 'plan:example-family';
 const at = (r: { polygon: [number, number][] }) => polygonCentroid(r.polygon);
 const mk = (id: string, anchor: Comment['anchor'], text: string, category: Comment['category'], author: string, role: Comment['role'], createdAt: string, status: Comment['status'] = 'open', replies: Comment[] = []): Comment =>
   ({ id, projectId: pid, source: 'design-workspace', anchor, text, category, author, role, createdAt, status, replies });
-const living = room('living'), master = room('master'), garage = room('garage');
+const living = f0.rooms.find((r) => r.name === 'Living') ?? room('living'), master = room('master'), garage = room('garage');
 const ext = f0.walls.filter((w) => w.exterior).sort((a, b) => Math.hypot(b.b[0] - b.a[0], b.b[1] - b.a[1]) - Math.hypot(a.b[0] - a.a[0], a.b[1] - a.a[1]))[0];
 const wallMid: [number, number] = [(ext.a[0] + ext.b[0]) / 2, (ext.a[1] + ext.b[1]) / 2];
 const comments: Comment[] = [

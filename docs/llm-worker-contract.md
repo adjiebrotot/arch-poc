@@ -1,7 +1,9 @@
 # LLM Worker contract (`/parse`)
 
-The “Tell us” chat mode turns a client's free-text wishes into a structured
-brief. The browser **never** talks to an LLM provider directly and **never holds
+The “Just tell us” mode turns a client's free-text wishes into a structured
+brief. By the time the chat starts the client has already drawn their lot and the
+footprint of every floor, so the floor area and number of floors are known: the
+brief is about what goes **inside** (rooms and how they relate). The browser **never** talks to an LLM provider directly and **never holds
 keys**. It calls a Cloudflare Worker that the firm builds and runs separately.
 This document is the contract that Worker must implement. The client side is in
 `src/features/design/llm/WorkerProvider.ts`.
@@ -63,23 +65,23 @@ Content-Type: application/json
 
 | Field | Type | Notes |
 |---|---|---|
-| `status` | `"complete" \| "needs_clarification"` | `complete` only when area, floors, bedrooms and bathrooms are all known |
-| `requirements.area` | `number \| null` | Gross floor area in m² |
-| `requirements.floors` | `number \| null` | 1–3 |
+| `status` | `"complete" \| "needs_clarification"` | `complete` once bedrooms and bathrooms are known |
+| `requirements.area` | `number \| null` | Gross floor area in m², if the client mentions one. Informational only: the drawn footprints set the size, and the client says so when they differ |
+| `requirements.floors` | `number \| null` | 1–3, if mentioned. Informational only, like `area` |
 | `requirements.bedrooms` | `number \| null` | 1–6 |
 | `requirements.bathrooms` | `number \| null` | 1–4 |
-| `requirements.extras` | `string[]` | Known ids: `study`, `garage`, `laundry`, `open-plan`. Synonyms such as “home office” or “carport” are mapped on the client; anything else is dropped |
+| `requirements.extras` | `string[]` | Known ids. Rooms: `study`, `garage`, `laundry`, `dining`, `family`, `powder`. Preferences (how rooms relate): `open-plan`, `master-ground` (main bedroom downstairs), `living-back` (living areas face the back garden). Synonyms such as “home office”, “carport”, “rumpus” or “master downstairs” are mapped on the client; anything else is dropped |
 | `requirements.style` | `string \| null` | Short label, e.g. `modern` |
 | `requirements.notes` | `string` | Free-text summary (≤ 500 chars) |
 | `assistantMessage` | `string` | Friendly reply or **one** clarifying question. Plain text only, never HTML |
-| `missingFields` | `string[]` | Any of `area`, `floors`, `bedrooms`, `bathrooms` |
+| `missingFields` | `string[]` | Any of `bedrooms`, `bathrooms` (the client recomputes it; `area` / `floors` are ignored) |
 
 ### What the client does with it (it never trusts the Worker)
 
 1. Validates the body with Zod (`WorkerResponseSchema`). If validation fails, it falls back to the rule-based parser.
 2. Clamps values into range: area 30–600 (rounded to 5), floors 1–3, bedrooms 1–6, bathrooms 1–4. It whitelists extras and strips `<` and `>` from text.
 3. Recomputes `missingFields` and `status` from the sanitised values.
-4. Runs the brief through `feasibility.ts` before generating. If the brief can't fit (e.g. 60 m² with 3 bedrooms), the chat explains why and offers the nearest feasible option.
+4. Runs the brief through `feasibility.ts` against the drawn footprints before generating. If the brief can't fit (e.g. 3 bedrooms in a 60 m² footprint), the chat explains why and offers the nearest brief that fits, or going back to make the floors bigger.
 
 ## Errors
 

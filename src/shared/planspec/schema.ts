@@ -46,6 +46,12 @@ export const FloorSchema = z.object({
   walls: z.array(WallSchema),
   rooms: z.array(RoomSchema),
   openings: z.array(OpeningSchema),
+  /**
+   * The storey's envelope as the client drew it: the outer face of the outside walls, in plan
+   * metres. User-defined geometry: the ground floor must sit inside the lot and every upper
+   * floor inside the floor below. Rooms (walls) always stay inside it.
+   */
+  footprint: z.array(Vec2).optional(),
 });
 
 /** A road running along one side of the lot. `edge` i is boundary[i] → boundary[i+1]. */
@@ -67,6 +73,13 @@ export const SiteSchema = z.object({
   roads: z.array(RoadSchema).optional(),
   /** main entrance: a point on a road side, `t` 0–1 along that edge */
   entrance: z.object({ edge: z.number().int().nonnegative(), t: z.number() }).optional(),
+  /** how the lot was defined: drawn on the 1 m grid, or traced over an OpenStreetMap map */
+  source: z.enum(['grid', 'map']).optional(),
+  /**
+   * Map-traced lots: plan (0, 0) is this point, and the plan is the map turned `rotation` degrees
+   * clockwise (0 = north up). North then always equals `rotation`, so it is locked.
+   */
+  geo: z.object({ lat: z.number(), lon: z.number(), rotation: z.number(), label: z.string().optional() }).optional(),
 });
 
 export const RequirementsSchema = z.object({
@@ -88,6 +101,12 @@ export const PlanSpecSchema = z.object({
     createdAt: z.string(),
     id: z.string().optional(),
     seed: z.number().optional(),
+    /**
+     * Where the plan is in the design workflow. Every mode starts with the lot, then the floor
+     * footprints; Sketch goes on to draw rooms, Template / Tell us generate them first.
+     * Missing on older plans, which open straight in the workspace.
+     */
+    stage: z.enum(['lot', 'floors', 'brief', 'layout', 'design']).optional(),
   }),
   site: SiteSchema.optional(),
   floors: z.array(FloorSchema).min(1),
@@ -102,6 +121,7 @@ export type Road = z.infer<typeof RoadSchema>;
 export type Site = z.infer<typeof SiteSchema>;
 export type Requirements = z.infer<typeof RequirementsSchema>;
 export type PlanSpec = z.infer<typeof PlanSpecSchema>;
+export type Stage = NonNullable<PlanSpec['meta']['stage']>;
 
 export const ROOM_LABELS: Record<RoomType, string> = {
   bedroom: 'Bedroom', master: 'Main bedroom', bathroom: 'Bathroom', ensuite: 'Ensuite',
@@ -115,11 +135,13 @@ export const ROOM_COLORS: Record<RoomType, string> = {
   hallway: '#EFEDE8', entry: '#EFEAE0', stairs: '#E6E2DA', wc: '#D8EAF0', other: '#EEEBE5',
 };
 
+/** A fresh plan at the start of the workflow: no lot, one empty storey without a footprint. */
 export function emptyPlan(mode: PlanSpec['meta']['mode'], title = 'My new home'): PlanSpec {
   return {
     version: '1.0',
-    meta: { title, createdBy: 'client', mode, createdAt: new Date().toISOString() },
-    site: { width: 20, depth: 30, northAngle: 0, boundary: [[0, 0], [20, 0], [20, 30], [0, 30]], roads: [{ edge: 2 }], entrance: { edge: 2, t: 0.5 } },
+    meta: { title, createdBy: 'client', mode, createdAt: new Date().toISOString(), stage: 'lot' },
     floors: [{ level: 0, height: 2.7, walls: [], rooms: [], openings: [] }],
   };
 }
+
+export const floorLabel = (level: number) => (level === 0 ? 'Ground floor' : `Level ${level + 1}`);

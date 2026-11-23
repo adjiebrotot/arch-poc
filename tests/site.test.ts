@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as site from '../src/shared/planspec/site';
 import { PlanSpecSchema, emptyPlan, type Site } from '../src/shared/planspec/schema';
 import { generatePlan } from '../src/features/design/generator/generator';
+import { demoEnvelope } from '../src/features/design/generator/templates';
 import { planToModel } from '../src/features/design/engine/plan3d';
 import { floorToSvg } from '../src/features/design/engine/planSvg';
 
@@ -77,22 +78,25 @@ describe('lot polygon, roads and compass', () => {
     for (const p of r.asphalt) expect(p[1]).toBeGreaterThanOrEqual(30 + site.VERGE - 1e-9);
   });
 
-  it('generated plans get a lot, a front road and an entrance in front of the front door', () => {
-    const p = generatePlan({ area: 120, floors: 1, bedrooms: 3, bathrooms: 1, extras: [], seed: 4 });
+  it('generated plans keep the client\'s lot and put the front door facing its entrance', () => {
+    const env = demoEnvelope('cottage');
+    const p = generatePlan({ envelope: env, bedrooms: 2, bathrooms: 1, extras: [], seed: 4 });
     expect(() => PlanSpecSchema.parse(p)).not.toThrow();
-    expect(p.site!.boundary).toHaveLength(4);
-    expect(p.site!.roads).toEqual([{ edge: 2 }]);
+    expect(p.site!.boundary).toEqual(env.site!.boundary);
+    expect(p.site!.roads).toEqual(env.site!.roads);
     const e = site.entrancePoint(p.site!)!;
     const f = p.floors[0];
     const door = f.openings.find((o) => o.type === 'door' && f.walls.find((w) => w.id === o.wallId)?.exterior && o.width < 1.5)!;
     const w = f.walls.find((x) => x.id === door.wallId)!;
     const len = Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]);
-    expect(e.p[0]).toBeCloseTo(w.a[0] + ((w.b[0] - w.a[0]) * door.offset) / len, 1);
-    expect(emptyPlan('pro').site!.roads).toHaveLength(1);
+    const dx = w.a[0] + ((w.b[0] - w.a[0]) * door.offset) / len, dy = w.a[1] + ((w.b[1] - w.a[1]) * door.offset) / len;
+    expect(dy).toBeCloseTo(15.875, 2); // in the street-side wall
+    expect(Math.abs(dx - e.p[0])).toBeLessThan(2.5);
+    expect(emptyPlan('pro').site).toBeUndefined(); // every mode starts by drawing the lot
   });
 
   it('exports the lot to SVG and 3D', () => {
-    const p = generatePlan({ area: 100, floors: 1, bedrooms: 2, bathrooms: 1, extras: [], seed: 2 });
+    const p = generatePlan({ envelope: demoEnvelope('cottage'), bedrooms: 2, bathrooms: 1, extras: [], seed: 2 });
     const svg = floorToSvg(p.floors[0], { site: p.site });
     expect(svg).toContain('MAIN ROAD');
     const m = planToModel(p, { site: true });

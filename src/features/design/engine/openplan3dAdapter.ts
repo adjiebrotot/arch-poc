@@ -10,7 +10,8 @@ import type { OP3DFloor, OP3DWall, OP3DRoom } from '@vendor/openplan3d';
 import { resolveRoomGeometry } from '@vendor/openplan3d';
 import type { PlanSpec, Floor, Room, Wall, RoomType } from '@shared/planspec/schema';
 import { ROOM_TYPES } from '@shared/planspec/schema';
-import { pointInPolygon, polygonCentroid, polygonArea, type Vec2 } from '@shared/util/geometry';
+import { pointInPolygon, polygonCentroid, polygonArea, offsetPolygon, type Vec2 } from '@shared/util/geometry';
+import { ENVELOPE_T } from '@shared/planspec/envelope';
 
 const CM = 100;
 const toCm = (v: number) => Math.round(v * CM * 10) / 10;
@@ -41,7 +42,7 @@ function wallToOP3D(w: Wall, heightM: number): OP3DWall {
 }
 
 /** Detect room faces for a set of PlanSpec walls using openPlan3D. */
-function detectFaces(walls: Wall[], heightM: number): { room: OP3DRoom; polygon: Vec2[] }[] {
+export function detectFaces(walls: Wall[], heightM: number): { room: OP3DRoom; polygon: Vec2[] }[] {
   if (walls.length < 3) return [];
   const faces = resolveRoomGeometry({ walls: walls.map((w) => wallToOP3D(w, heightM)), rooms: [] });
   return faces
@@ -95,11 +96,34 @@ export function recomputeRooms(floor: Floor): Floor {
       name: prev?.name ?? 'Room',
       type: prev?.type ?? 'other',
       polygon: f.polygon,
-      area: Math.round(polygonArea(f.polygon) * 10) / 10,
+      // openPlan3D deducts rooms drawn inside another room (an island) from the outer one
+      area: Math.round((f.room.area > 0 ? f.room.area : polygonArea(f.polygon)) * 10) / 10,
     };
   });
   const walls = floor.walls.map((w) => ({ ...w, exterior: isExterior(w, rooms) }));
   return { ...floor, walls, rooms };
+}
+
+/**
+ * Footprint for plans made before footprints existed: the outline traced by the outside walls,
+ * pushed out by half a wall so it is the outer face of the building.
+ */
+export function deriveFootprint(floor: Floor): Vec2[] | null {
+  const ext = floor.walls.filter((w) => w.exterior);
+  const faces = detectFaces(ext.length >= 3 ? ext : floor.walls, floor.height);
+  if (!faces.length) return null;
+  const outline = faces.sort((a, b) => polygonArea(b.polygon) - polygonArea(a.polygon))[0].polygon;
+  return offsetPolygon(outline, -ENVELOPE_T / 2).map(([x, y]) => [Math.round(x * 1000) / 1000, Math.round(y * 1000) / 1000] as Vec2);
+}
+
+/** Give every floor with walls a footprint (older plans). Mutates and returns the plan. */
+export function ensureFootprints(plan: PlanSpec): PlanSpec {
+  for (const f of plan.floors) {
+    if (f.footprint || !f.walls.length) continue;
+    const fp = deriveFootprint(f);
+    if (fp) f.footprint = fp;
+  }
+  return plan;
 }
 
 /** PlanSpec → openPlan3D floors (cm). Room metadata travels in `details.roomType`. */

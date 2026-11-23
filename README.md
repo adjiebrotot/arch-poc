@@ -2,17 +2,17 @@
 
 A **fully static** proof of concept for a residential architecture practice, deployable to GitHub Pages:
 
-* **Feature 1 – Design it yourself.** Non-architects sketch a layout (Pro), pick a generated layout that fits their size and budget (Creative), or describe their wishes in a chat (Tell us). All three produce a `PlanSpec` that opens in a friendly, touch-first editor with comments.
+* **Feature 1 – Design it yourself.** Every design starts from the client's own envelope: the **lot** (drawn on a 1 m grid or traced over an OpenStreetMap map) and the **footprint of each floor** (lot ⊇ ground floor ⊇ level 2 ⊇ level 3). Then the client either sketches the rooms themselves (Sketch it yourself) or lets us generate them inside those footprints, from a template (Start from a template) or from a chat (Just tell us). All three produce a `PlanSpec` that opens in a friendly, touch-first editor with comments.
 * **Feature 2 – Walk & comment.** The architect publishes an IFC or GLB model. The client views watermarked 2D drawings (plans, reflected ceiling plan, sections, elevations) or walks through a photoreal 3D scene, and pins comments exactly where they mean.
 
-Everything runs in the browser. The only external call is the optional LLM Cloudflare Worker, which is treated as a black box (see [`docs/llm-worker-contract.md`](docs/llm-worker-contract.md)).
+Everything runs in the browser. The external calls are the optional LLM Cloudflare Worker, which is treated as a black box (see [`docs/llm-worker-contract.md`](docs/llm-worker-contract.md)), and OpenStreetMap services, used only when a client chooses to find their lot on a map (tiles, address search and road data; see [Lot from a map](#lot-from-a-map-openstreetmap)).
 
 ## Quick start
 
 ```bash
 npm ci
 npm run dev          # http://localhost:5173
-npm test             # Vitest: feasibility, generator, adapters, LLM validation/fallback, IFC parsing
+npm test             # Vitest: envelope hierarchy, generator (L/U/T/diagonal/multi-storey footprints), feasibility, OSM helpers, editor, adapters, LLM, IFC
 npm run build        # → dist/ (base path /arch-poc/ unless BASE_PATH is set)
 npm run check        # svelte-check / TypeScript
 npx tsx scripts/build-samples.ts   # re-bake the sample GLB + example design bundle
@@ -20,7 +20,7 @@ npx tsx scripts/ifc-batch.ts <dir> # parse every .ifc in a folder (robustness / 
 python3 scripts/make-textured-ifc.py <ambientCG-dir>  # re-author the textured IFC sample (needs ifcopenshell, pillow)
 ```
 
-Optional: copy `.env.example` to `.env` and set `VITE_LLM_WORKER_URL` to try the Worker locally. Add `?llm=mock` to the chat URL (`#/design/chat?llm=mock`) to use canned responses.
+Optional: copy `.env.example` to `.env` and set `VITE_LLM_WORKER_URL` to try the Worker locally. Add `&llm=mock` to the setup URL of a *Just tell us* plan (`#/design/setup?id=…&llm=mock`) to use canned chat responses. `VITE_TILE_URL`, `VITE_GEOCODER_URL` and `VITE_OVERPASS_URL` swap the OpenStreetMap services (see below).
 
 ## Deploying to GitHub Pages
 
@@ -35,10 +35,10 @@ Routing is hash-based (`/#/design`, `/#/viewer/walk`…), so refreshing any rout
 | Route | What |
 |---|---|
 | `#/` | Landing page with two feature cards |
-| `#/design` | Choose a mode (Pro / Creative / Tell us), recent plans, import, example plan with comments |
-| `#/design/creative` | Template wizard: size → rooms (infeasible options disabled with reasons) → 3–6 variants |
-| `#/design/chat` | Chat → editable requirement chips → feasibility check → variants |
-| `#/design/workspace?id=…` | Editor: ✏️ Edit / 💬 Comment, 2D/3D, undo/redo, autosave, *Send to architect* |
+| `#/design` | Choose a mode (Sketch / Template / Tell us), recent plans (they reopen at the step they were left at), import, example plan with comments |
+| `#/design/setup?id=…` | The workflow before the editor. Sketch: **Lot → Ground floor**. Template: **Lot → All floors → Template → Pick a layout**. Tell us: **Lot → All floors → Describe → Pick a layout** |
+| `#/design/sketch`, `#/design/creative`, `#/design/chat` | Start a new plan in that mode (goes to the lot step) |
+| `#/design/workspace?id=…` | Editor: ✏️ Edit / 💬 Comment, 2D/3D, undo/redo, autosave, footprint tool, *Send to architect* |
 | `#/viewer` (`?project=<id>`) | Load a published project, a demo sample, or upload IFC/GLB (Architect role) |
 | `#/viewer/plan` | Watermarked 2D drawings with comments and PNG/PDF export |
 | `#/viewer/walk` (`?comment=<id>`) | 3D walkthrough / orbit, minimap, time of day, quality presets, spatial comments |
@@ -54,9 +54,11 @@ flowchart LR
     direction TB
     App["App shell<br/>hash router · role toggle"] --> D & V & C
     subgraph D["Feature 1 · Design"]
-      Modes["Pro / Creative / Chat"] --> Gen["generator.ts<br/>seeded treemap"]
-      Feas["feasibility.ts"] --> Gen
-      Chat["Chat UI"] --> LLM["LLMProvider<br/>Worker → RuleBased · Mock"]
+      Setup["Setup flow<br/>lot (grid · OSM map) → floor footprints"] --> Env[("Envelope<br/>lot ⊇ GF ⊇ L2 ⊇ L3")]
+      Env -->|Sketch| WS
+      Env -->|Template · Tell us| Gen["generator.ts<br/>rooms inside the footprints"]
+      Feas["feasibility.ts<br/>(against the envelope)"] --> Gen
+      Chat["Describe step"] --> LLM["LLMProvider<br/>Worker → RuleBased · Mock"]
       LLM -->|Zod-validated, clamped| Feas
       Gen --> PS[("PlanSpec")]
       PS <--> Adapter["openplan3dAdapter"] <--> OP3D["vendor/openplan3d<br/>room detection"]
@@ -74,6 +76,7 @@ flowchart LR
     C & WS & Load --> SA["StorageAdapter"] --> LS[("localStorage +<br/>IndexedDB cache")]
   end
   LLM -. "POST /parse (no keys)" .-> CF["Cloudflare Worker<br/>(maintained separately)"]
+  Setup -. "tiles · search · roads" .-> OSM["OpenStreetMap<br/>tiles · Nominatim · Overpass"]
   Pages[("public/projects/&lt;id&gt;/<br/>model + comments.json")] --> Load
 ```
 
@@ -82,14 +85,17 @@ flowchart LR
 ```
 src/
   App.svelte, main.ts, app.css
-  shared/          router, StorageAdapter (+ local impl), comments (model, store, UI), planspec schema, model types, UI kit
+  shared/          router, StorageAdapter (+ local impl), comments (model, store, UI), model types, UI kit
+    planspec/      schema.ts, site.ts (lot, roads, compass), envelope.ts (lot ⊇ footprints ⊇ rooms)
+    geo/           osm.ts (local metric frame, tiles, Nominatim search, Overpass roads, frontage detection)
   features/
     landing/
-    design/        DesignHome, CreativeWizard, ChatMode
-      generator/   feasibility.ts, generator.ts, templates.ts
+    design/        DesignHome, planStore, PlanThumb
+      setup/       DesignFlow (steps), LotStep, FloorsStep, TemplateBrief, ChatBrief, LayoutStep, NewPlan
+      generator/   raster.ts, program.ts, generator.ts, feasibility.ts, templates.ts
       llm/         WorkerProvider, RuleBasedProvider, MockProvider, FallbackProvider, Zod schemas
       engine/      openplan3dAdapter.ts, plan3d.ts (PlanSpec → 3D), planSvg.ts
-      workspace/   Workspace, PlanCanvas (touch editor), editor.svelte.ts (ops, history, anchors), Preview3D
+      workspace/   Workspace, PlanCanvas (the one canvas for lots, footprints and rooms), MapTiles, SiteSheet, Compass, editor.svelte.ts (ops, history, anchors), Preview3D
     viewer/        ViewerHome, WalkView, PlanView, Minimap, Joystick
       model/       ifcParse.ts, ifc.worker.ts, glbLoad.ts, modelStore.ts, slice.ts
       engine/      ViewerEngine.ts (3D), DrawingEngine.ts (2D), materials.ts
@@ -113,14 +119,62 @@ tests/             Vitest suites
 
 ### Feature 1
 
-* **PlanSpec** (`src/shared/planspec/schema.ts`): a Zod schema in metres. Every mode produces it. `site` holds the lot outline (`boundary`), the road sides (`roads`, by edge index), the `entrance` and `northAngle` (degrees clockwise from the top of the plan). Plans saved before this only had `width × depth`; they are upgraded on open to a rectangle with one road on the front side and the entrance in front of the front door. `planSpecToOpenPlan3D()` and `openPlan3DToPlanSpec()` convert to and from openPlan3D's centimetre model.
-* **Feasibility** (`generator/feasibility.ts`): minimum room areas, +15 % circulation, +12 % walls, +6 m² of stairs per extra floor, and a minimum floor-plate size. For example, 60 m² on one floor allows 2 bed 1 bath, while 3 bed shows “Needs ~70 m²+”. Infeasible options are shown greyed out with the reason, not hidden.
-* **Generator** (`generator/generator.ts`): deterministic and seeded (mulberry32). The footprint is split into a private band, a full-width hallway spine and a public front band. Each band is a strip treemap, so every room touches the hallway and an exterior wall. Wet areas are grouped. The main bedroom gets an ensuite and walk-in robe. Living and kitchen are joined by a wide opening. The entry and garage door are always on the front, and stairs line up across floors. Doors go on shared walls and windows on exterior walls. The same inputs and seed always give the same plan (tested).
-* **Chat**: `FallbackProvider` tries the `WorkerProvider` (15 s timeout) and falls back to the `RuleBasedProvider` (regex/keywords, understands short answers like “2”) when the URL is unset, on errors, on HTTP 429 or on invalid output. Fallback shows the badge “Offline mode – simplified parsing”. Parsed requirements appear as editable chips. Infeasible briefs get an explanation plus one-tap suggestions (“Use 2 bed 1 bath + study” or “Make it 85 m²”).
-* **Workspace**: tools Move, Add a room, Draw wall, Add door, Add window, Remove and Lot & road. It snaps to a 10 cm grid, wall corners and walls, and while drawing an outline it also snaps to 0/45/90° lines from the previous corner. Room areas update live through openPlan3D room detection. Other features: undo/redo, autosave, coach marks in Pro mode, an Advanced drawer, pinch-zoom, long-press to grab on touch, and bottom sheets.
-* **Rooms of any shape**: *Add a room* defaults to **⬠ Any shape**: tap each corner, then tap the first corner (or *Done*, or Enter) to close. Lengths and the area show while you draw; Backspace or *↶ Corner* removes the last corner, and outlines that cross themselves are refused. **▭ Rectangle** keeps the old drag-a-box / tap-to-drop behaviour.
-* **Reshaping**: select a room with *Move* and its corners appear as handles. Drag a corner and every wall meeting there follows; a corner that sits in the middle of another wall (a T-junction) slides along that wall, and inside walls that T into a moved wall stay attached and keep their direction. Pull the **⊕** in the middle of a side to add a corner there (the wall is split, its doors and windows stay put). Tap a corner and *Remove corner* (or Delete) to straighten the two walls back into one. Dragging a whole wall still moves it along its normal. Selected rooms show the length of every side.
-* **Lot, roads & compass** (`src/shared/planspec/site.ts`): the lot is a polygon. With **🧭 Lot & road** you drag lot corners, pull a ⊕ to add one, tap a corner to remove it, or *Redraw lot* by tapping its corners. Each side shows its length and the direction it faces. Tap a side to mark a **road** along it or move the **➜ entrance** there; drag the entrance along any road side. *Roads & north* has one-tap layouts for the common cases: **One road**, **Corner lot (L)** with the side road on the left or right, and **Front & back**. Road names and widths are editable. The **compass** (top left) shows north and which way the main road faces; drag it to rotate north, tap it for the settings, or pick “the main road faces N/NE/E…” and north is set for you. Roads, footpaths, the lot kerb and the entrance also appear in the SVG export and the 3D preview, where the sun's path follows the compass.
+#### The workflow: Lot → floor footprints → rooms
+
+The spatial hierarchy is **Lot → floor footprint(s) → rooms**, and every mode follows it:
+
+| Mode | Steps | Who draws the rooms |
+|---|---|---|
+| **Sketch it yourself** | Lot → ground-floor footprint → draw rooms → *+ Add floor* → adjust its footprint → draw its rooms | The client |
+| **Start from a template** | Lot → the footprint of **every** floor → pick a template (and fine-tune it) → pick a generated layout | Generated inside the footprints |
+| **Just tell us** | Lot → the footprint of **every** floor → describe the home in a chat → pick a generated layout | Generated inside the footprints |
+
+* **User-defined geometry**: the lot, the number of floors and each floor's footprint. **System-generated geometry** (Template / Tell us): the rooms, their arrangement, hallways, stairs, walls, doors and windows. In Sketch the client draws both.
+* The hierarchy is enforced everywhere, on every edit (`src/shared/planspec/envelope.ts`): the ground floor stays inside the lot, every upper floor inside the floor immediately below it, and every wall inside its floor's footprint. A drag that would break it stops where it is and says why; a lot or lower floor can't be shrunk under what sits on it.
+* A footprint is the **outer face** of the outside walls. Outside walls (25 cm) run along it with their outer face on it, so rooms live inside the *wall line* (the footprint pulled in by half a wall).
+* Lots, footprints and rooms all use **the same point-by-point interaction** on the same canvas (`PlanCanvas.svelte`): tap each corner (it snaps to the **1 m grid**; on a map it follows the map), tap the first corner or *Done* to close, drag corners, pull a ⊕ in the middle of a side to add one, tap a corner to remove it. Outlines that cross themselves are refused. Nothing assumes rectangles; a *rectangle W × D* shortcut is offered for the lot and footprints, as a starting point only.
+* Plans remember where they are (`meta.stage`: `lot`, `floors`, `brief`, `layout`, `design`) and reopen at that step.
+
+#### Lot on a grid
+
+A blank 1 m grid: tap the lot's corners. The side facing down the screen becomes the street; tap any side to mark it as a street (several sides for corner or through lots) or move the ➜ entrance there; drag the entrance along a street side. The **compass** sets north: drag it, or pick "the street faces N/NE/E…" in *Streets & north*, where road names and widths are also set.
+
+#### Lot from a map (OpenStreetMap)
+
+* Search an address (OpenStreetMap **Nominatim**, one request per search, as its usage policy asks), type coordinates (`-33.8688, 151.2093`) or use the device location, then trace the lot over **OpenStreetMap tiles**.
+* The plan is a local metric frame centred on the searched point (Web-Mercator is conformal, so one scale factor gives metres; `src/shared/geo/osm.ts`). **North comes from the map** and is locked: the compass can't be turned by hand on a map lot.
+* When the outline is closed, the roads around it are fetched from the **Overpass API** and each lot side is tested: a road roughly parallel to the side, in front of it within about 28 m (service lanes only within 12 m), makes it a street side, named after the road. The best one gets the entrance.
+* The plan is then turned so the street is at the bottom (the usual way to draw a plan), and north follows: `site.geo.rotation` is stored and the north angle equals it, so the real-world orientation is kept. *North up* is one tap away while no footprint exists. The map can be shown under the floors step too.
+* `VITE_TILE_URL` (`{z}/{x}/{y}` template), `VITE_GEOCODER_URL` and `VITE_OVERPASS_URL` point these at other providers. Attribution (© OpenStreetMap contributors) is shown on the map. If a service can't be reached, the lot still works: search accepts coordinates and the street side can be tapped.
+
+#### Floor footprints
+
+* The ground floor is drawn inside the lot (the lot stays visible as context).
+* *+ Add floor* starts the new storey as an **exact copy of the floor immediately below**, which then shows as a hatched silhouette. The client can make it smaller or change its shape, never reach outside it. Template / Tell us define every floor here before anything is generated; Sketch defines the ground floor here and adds floors in the editor.
+
+#### Generating rooms inside the footprints (Template / Tell us)
+
+* **Templates are programmes, not buildings** (`generator/templates.ts`): *The Cottage*, *The Family Home*, *The Entertainer*, *The Townhouse*. The footprints never change to fit a template: a template that needs more space than the floors offer is **adapted down** (fewer rooms, shown as *Adapted*), and the fine-tune chips (bedrooms/bathrooms, extra rooms, preferences) show what fits.
+* **Feasibility** (`generator/feasibility.ts`) is checked against the real envelope: total footprint area and each floor's area. It uses minimum room areas, +15 % circulation, +12 % walls and 7 m² of stairs per extra floor; the ground floor must be at least 28 m² and upper floors 16 m². For example, 60 m² on one floor allows 2 bed 1 bath, while 3 bed shows “Needs ~70 m²+”. Infeasible options are shown greyed out with the reason, not hidden, and the nearest brief that fits is suggested.
+* **Programme** (`generator/program.ts`): public rooms (entry, living, kitchen, dining, family room, garage), service rooms (study, laundry, powder room) and private rooms (main bedroom with ensuite and walk-in robe when there are 2+ bathrooms, bedrooms, bathrooms). On several floors the bedrooms go up, by the space each floor has; a bathroom goes on every floor with bedrooms, and the ground floor gets a powder room or guest bathroom. Spare space becomes a family room, study, retreat or storage; preferences such as *main bedroom downstairs* and *living faces the back garden* change the arrangement.
+* **Generator** (`generator/generator.ts`, `raster.ts`), deterministic and seeded (mulberry32):
+  1. A local frame lines the grid up with the footprint's main wall direction and puts the lot's main street at the front. Each floor's wall line is rasterised into 25 cm cells, with the exact share of each cell inside the polygon, so diagonal and irregular sides are handled exactly.
+  2. A **hallway spine** is chosen so every part of the floor is within reach (about 6 m), the street side gets the public rooms and the quiet side the private ones. Wings out of reach (L, T, U shapes) get a **branch hallway**.
+  3. On multi-storey homes the **stairs** sit beside the spine, inside the smallest (top) footprint, in the same place on every floor, preferably against an outside wall; the landings stack over the ground-floor hallway.
+  4. Rooms reach **straight out** from a side of the hallway, so walls stay straight; each side is sliced along the hallway into rooms by target area (a balanced partition keeps sizes even across strips). Small wet rooms keep only the depth they need and the neighbouring bedroom wraps behind them; the main bedroom gets a strip for the ensuite and walk-in robe.
+  5. Walls are the boundaries between rooms, **clipped to the exact wall line**, so rooms meet diagonal outside walls exactly; rooms are then detected from the walls by the same openPlan3D engine the editor uses. Doors go on shared walls (living, kitchen and dining get wide openings), windows on outside walls, the garage door on the street side and the **front door faces the lot's entrance**.
+  6. Several seeded candidates are **scored** (every room reachable, daylight for habitable rooms, proportions, sizes, hallway share, entry and garage on the street) and the best distinct ones are offered. Same envelope + brief + seed ⇒ the same plan (tested).
+* **Tell us (chat)**: the envelope is already drawn, so the chat only needs **bedrooms and bathrooms**; it also picks up extra rooms (study, garage, laundry, dining, family room, powder room) and relationships (*main bedroom downstairs*, *living facing the back garden*). If the client mentions a size or number of floors that differs from the footprints, the assistant points out that the footprints set them. `FallbackProvider` tries the `WorkerProvider` (15 s timeout) and falls back to the `RuleBasedProvider` (regex/keywords, understands short answers like “2”) when the URL is unset, on errors, on HTTP 429 or on invalid output; fallback shows the badge “Offline mode – simplified parsing”. Parsed requirements appear as editable chips.
+
+#### The workspace
+
+* **PlanSpec** (`src/shared/planspec/schema.ts`): a Zod schema in metres. `site` holds the lot outline (`boundary`), the road sides (`roads`, by edge index), the `entrance`, `northAngle` (degrees clockwise from the top of the plan), `source` (`grid` / `map`) and, for map lots, `geo` (origin and rotation). Each floor has its `footprint`. Plans saved before footprints existed get one traced from their outside walls when they open; plans saved before lots were polygons get a rectangle with one road on the front side. `planSpecToOpenPlan3D()` and `openPlan3DToPlanSpec()` convert to and from openPlan3D's centimetre model.
+* **Tools**: Move, Add a room, Draw wall, Add door, Add window, Remove, 🏠 Footprint and 🧭 Lot & road. Corners snap to the **1 m grid** and to walls and wall corners; doors and windows slide in 10 cm steps. Room areas update live through openPlan3D room detection. Other features: undo/redo, autosave, coach marks in Sketch mode, an Advanced drawer, pinch-zoom, long-press to grab on touch, and bottom sheets.
+* **Rooms of any shape**: *Add a room* defaults to **⬠ Any shape**: tap each corner, then tap the first corner (or *Done*, or Enter) to close. Lengths and the area show while you draw; Backspace or *↶ Corner* removes the last corner. Corners just outside the footprint are pulled onto its outside wall; a room that reaches outside is refused. **▭ Rectangle** keeps drag-a-box / tap-to-drop.
+* **Sketch mode** starts each floor with its outside walls already in place around one *Open space*; rooms drawn inside split it. Outside walls follow the footprint: they can't be deleted or dragged on their own, only through 🏠 **Footprint**, where dragging the footprint's corners moves them and any inside wall meeting them slides along (doors and windows stay roughly where they were). A footprint change that would leave a room outside is refused.
+* **Floors**: the floor tabs show each footprint's area. In Sketch, *+ Add floor* copies the floor below (footprint and outside walls) and opens 🏠 Footprint so it can be made smaller before drawing its rooms. Generated plans offer *Change floors & regenerate…*, which goes back to the floors step.
+* **Reshaping**: select a room with *Move* and its corners appear as handles. Drag a corner and every wall meeting there follows; a corner that sits in the middle of another wall (a T-junction) slides along that wall, and inside walls that T into a moved wall stay attached and keep their direction. Pull the **⊕** in the middle of a side to add a corner there (the wall is split, its doors and windows stay put). Tap a corner and *Remove corner* (or Delete) to straighten the two walls back into one. Dragging a whole wall still moves it along its normal.
+* **Lot, roads & compass** (`src/shared/planspec/site.ts`): with **🧭 Lot & road** you drag lot corners (never into the ground floor), pull a ⊕ to add one, tap a corner to remove it, or *Redraw lot* (grid lots). Each side shows its length and the direction it faces. Tap a side to mark a **road** along it or move the **➜ entrance** there; drag the entrance along any road side. *Roads & north* has one-tap layouts for the common cases: **One road**, **Corner lot (L)** with the side road on the left or right, and **Front & back**. The **compass** (top left) shows north and which way the main road faces. Roads, footpaths, the lot kerb and the entrance also appear in the SVG export and the 3D preview, where the sun's path follows the compass.
 * **Comments in the workspace**: each pin is anchored to an element id plus local coordinates (position along a wall and side offset, or offset from a room's centroid), so it **follows the element when it moves**. A comment can carry a category and a photo (stored as a base64 thumbnail).
 * **Send to architect**: a JSON bundle (PlanSpec + comments + requirements), or a compressed `#/design/workspace?share=…` link for small plans.
 
@@ -195,7 +249,8 @@ The repo ships `public/projects/duplex/` (the duplex IFC, version label, “Comp
 * **Performance on real phones is unverified.** It was checked only in headless Chromium with software WebGL (SwiftShader). The Low preset is designed for ≥30 fps on mid-range phones; confirm on real devices before relying on it.
 * **Drawings**: poché depends on the model's normals being consistent. Open or flipped IFC geometry can show dark patches. There are no dimensions, annotations or hatching standards yet.
 * **IFC**: very large models parse on the device. The single-thread WASM is slower than the multi-thread build. The simplified mode only drops furniture and small classes, with no mesh decimation.
-* **Generator**: it uses rectangular footprints only, with a three-band layout, on a rectangular lot with one road at the front. It doesn't yet fit the building to an irregular lot or orient it to a corner or front-and-back road; reshape the lot and rooms in the workspace afterwards. Very large briefs get long, narrow rooms. Multi-storey plans may add a bathroom on upper floors.
+* **Generator**: rooms are arranged on a 25 cm grid aligned with the footprint's main wall direction, so inside walls stay square to it (diagonal outside walls are followed exactly). Very irregular footprints (deep U shapes, many wings) give valid but less elegant plans; a footprint much bigger than the brief gets very generous rooms plus a family room, study or storage. Stairs are a single 2.25 × 3 m dog-leg core in the same place on every floor. A generated plan is a starting point to edit, not a design.
+* **Map lots**: OpenStreetMap rarely has property boundaries, so the client traces the lot by eye over the map; accuracy is that of the tiles (about 0.3 m at zoom 19). Road detection needs the road to be in OSM and roughly parallel to a lot side, within about 28 m. The public tile server and Nominatim have usage policies meant for light use: point `VITE_TILE_URL` / `VITE_GEOCODER_URL` at a commercial or self-hosted service before real traffic.
 * **The rule-based chat parser** covers common phrasings only. The Worker is expected to do the heavy lifting.
 * **GLB** materials map to the curated library by name keywords. Embedded textures are not kept.
 * **IFC textures**: `IfcIndexedPolygonalTextureMap` and `IfcTextureCoordinateGenerator` parameters are not interpreted; those fall back to box mapping. Real-world exports (Revit, Archicad, Tekla) rarely contain textures at all; they carry colours, which map to the curated PBR library. See [`docs/ifc-compatibility.md`](docs/ifc-compatibility.md) for the models tested.

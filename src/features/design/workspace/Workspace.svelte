@@ -3,11 +3,13 @@
   import { storage } from '@shared/storage/localAdapter';
   import { comments, addComment } from '@shared/comments/store';
   import { role, toast } from '@shared/stores/session';
-  import { ROOM_TYPES, ROOM_LABELS, ROOM_COLORS, type PlanSpec, type RoomType } from '@shared/planspec/schema';
-  import { recomputeRooms } from '../engine/openplan3dAdapter';
-  import { Editor, type Tool, type Hit } from './editor.svelte';
+  import { ROOM_TYPES, ROOM_LABELS, ROOM_COLORS, floorLabel, type PlanSpec, type RoomType } from '@shared/planspec/schema';
+  import { recomputeRooms, ensureFootprints } from '../engine/openplan3dAdapter';
+  import { Editor, OPEN_SPACE, type Tool, type Hit } from './editor.svelte';
   import PlanCanvas from './PlanCanvas.svelte';
   import Compass from './Compass.svelte';
+  import SiteSheet from './SiteSheet.svelte';
+  import { footprintArea, containerFor } from '@shared/planspec/envelope';
   import * as site from '@shared/planspec/site';
   import BottomSheet from '@shared/ui/BottomSheet.svelte';
   import StateBox from '@shared/ui/StateBox.svelte';
@@ -56,9 +58,13 @@
   }
 
   function init(id: string, plan: PlanSpec) {
+    // a plan still being set up (lot, floors, brief) goes back to the setup flow
+    if (plan.meta.stage && plan.meta.stage !== 'design') { navigate(`/design/setup?id=${id}`, { replace: true }); return; }
     planId = id;
     // Make sure rooms/areas are derived from walls via openPlan3D detection.
     plan.floors = plan.floors.map((f) => (f.walls.length ? recomputeRooms(f) : f));
+    // Older plans had no footprints: derive them from the outside walls.
+    ensureFootprints(plan);
     // Older plans only had a width × depth lot: give them an outline, a road and an entrance.
     site.ensureSite(plan);
     const ed = new Editor(plan);
@@ -70,8 +76,11 @@
     };
     editor = ed;
     status = 'ready';
-    showCoach = plan.meta.mode === 'pro' && !storage.getPref('coach-done', false) && plan.floors[0].walls.length === 0;
-    if (plan.meta.mode === 'pro' && plan.floors[0].walls.length === 0) ed.tool = 'room';
+    // sketch mode: outside walls follow each footprint, ready for rooms
+    if (plan.meta.mode === 'pro') ed.addEnvelopeWalls();
+    const blank = ed.plan.floors[0].rooms.every((r) => r.name === OPEN_SPACE);
+    showCoach = plan.meta.mode === 'pro' && !storage.getPref('coach-done', false) && blank;
+    if (plan.meta.mode === 'pro' && blank) ed.tool = 'room';
   }
   load();
 
@@ -93,19 +102,22 @@
     { id: 'door', icon: '🚪', label: 'Add door', key: 'd' },
     { id: 'window', icon: '🪟', label: 'Add window', key: 'n' },
     { id: 'erase', icon: '🧽', label: 'Remove', key: 'x' },
+    { id: 'footprint', icon: '🏠', label: 'Footprint', key: 'f' },
     { id: 'site', icon: '🧭', label: 'Lot & road', key: 'l' },
   ];
   const toolHint: Record<Tool, string> = {
     select: 'Tap to select · drag walls, doors or a room\'s corners · pull a ⊕ to add a corner · long-press to grab on touch',
-    room: 'Drag to draw a room, or tap to drop a 3.6 × 3 m room',
+    room: 'Drag to draw a room, or tap to drop a 4 × 3 m room',
+    footprint: 'Drag the footprint\'s corners (1 m grid) · pull a ⊕ to add a corner · rooms stay inside it',
     wall: 'Tap corner points to draw walls · tap the first point to close',
     door: 'Tap on a wall to add a door',
     window: 'Tap on a wall to add a window',
     erase: 'Tap a wall, door, window or room to remove it',
     site: 'Drag lot corners · pull a ⊕ to add a corner · tap a side to set a road · drag the ➜ entrance',
   };
-  const roomPolyHint = 'Tap each corner of the room · tap the first corner (or Done) to finish';
-  const lotDrawHint = 'Tap each corner of your lot · tap the first corner (or Done) to finish';
+  const roomPolyHint = 'Tap each corner of the room (snaps to 1 m) · tap the first corner (or Done) to finish';
+  const lotDrawHint = 'Tap each corner of your lot (snaps to 1 m) · tap the first corner (or Done) to finish';
+  const fpDrawHint = 'Tap each corner of the footprint (snaps to 1 m) · tap the first corner (or Done) to finish';
 
   function onCommentTap(hit: Hit) { pendingHit = hit; sheet = 'compose'; }
   function onPinTap(c: Comment) { threadId = c.id; sheet = 'thread'; }
@@ -123,7 +135,7 @@
     const f = editor.floor, s = editor.selection;
     if (s.kind === 'vertex') return { label: 'Corner · drag to reshape', vertex: s.point };
     if (s.kind === 'room') { const r = f.rooms.find((x) => x.id === s.id); return r ? { label: `${r.name} · ${r.area.toFixed(1)} m² · ${r.polygon.length} corners`, room: r } : null; }
-    if (s.kind === 'wall') { const w = f.walls.find((x) => x.id === s.id); return w ? { label: `${w.exterior ? 'Outside wall' : 'Wall'} · ${dist(w.a, w.b).toFixed(2)} m`, wall: w } : null; }
+    if (s.kind === 'wall') { const w = f.walls.find((x) => x.id === s.id); return w ? { label: `${editor.isEnvelopeWall(w) ? 'Outside wall (follows the footprint)' : w.exterior ? 'Outside wall' : 'Wall'} · ${dist(w.a, w.b).toFixed(2)} m`, wall: w } : null; }
     const o = f.openings.find((x) => x.id === s.id);
     return o ? { label: `${o.type === 'door' ? 'Door' : 'Window'} · ${o.width.toFixed(2)} m wide`, opening: o } : null;
   });
@@ -141,8 +153,9 @@
       if (e.key === 'Escape') { canvas?.finishChain(); return; }
     }
     if ((e.key === 'Delete' || e.key === 'Backspace') && editor.siteSelection?.kind === 'lot-vertex' && editor.tool === 'site') { removeLotCorner(); return; }
+    if ((e.key === 'Delete' || e.key === 'Backspace') && editor.siteSelection?.kind === 'fp-vertex' && editor.tool === 'footprint') { removeFpCorner(); return; }
     if ((e.key === 'Delete' || e.key === 'Backspace') && editor.selection) { remove(); return; }
-    if (e.key === 'Escape') { editor.selection = null; editor.siteSelection = null; editor.drawingLot = false; canvas?.finishChain(); editor.tool = 'select'; return; }
+    if (e.key === 'Escape') { editor.selection = null; editor.siteSelection = null; editor.drawingLot = false; editor.drawingFootprint = false; canvas?.finishChain(); editor.tool = 'select'; return; }
     const tool = tools.find((x) => x.key === e.key.toLowerCase());
     if (tool && !mod) { editor.mode = 'edit'; editor.tool = tool.id; }
     if (e.key === 'c' && !mod) editor.mode = editor.mode === 'comment' ? 'edit' : 'comment';
@@ -176,27 +189,17 @@
     const preset = site.detectPreset(st);
     const presetLabel = { single: 'One road', corner: 'Corner lot', double: 'Front & back roads', custom: `${st.roads?.length ?? 0} road sides` }[preset.preset];
     return {
-      site: st, front, preset, presetLabel,
+      site: st, front, presetLabel,
       area: site.lotArea(st),
       facing: front !== null ? site.edgeFacing(st, front) : null,
       roadEdges: new Set((st.roads ?? []).map((r) => r.edge)),
     };
   });
   const compassCaption = $derived(lotInfo?.facing ? `Road: ${lotInfo.facing}` : 'No road');
-  let cornerSide = $state<site.Side>('right');
 
-  function setPreset(p: site.RoadPreset, side: site.Side = cornerSide) {
-    if (!editor) return;
-    if (p === 'corner') cornerSide = side;
-    editor.setSite(site.applyPreset(editor.site, p, side));
-  }
   function setNorth(deg: number, history = true) {
     if (!editor) return;
     editor.setSite({ ...editor.site, northAngle: ((Math.round(deg) % 360) + 360) % 360 }, history);
-  }
-  function faceRoad(bearing: number) {
-    if (!editor || lotInfo?.front == null) return;
-    setNorth(site.northForFacing(site.outwardNormal(editor.site.boundary!, lotInfo.front), bearing));
   }
   function toggleRoadEdge(i: number) { if (editor) editor.setSite(site.toggleRoad(editor.site, i)); }
   function entranceHere(i: number) {
@@ -207,26 +210,10 @@
   }
   function removeLotCorner() {
     if (!editor || editor.siteSelection?.kind !== 'lot-vertex') return;
-    if (editor.site.boundary!.length <= 3) { toast('A lot needs at least 3 corners', 'error'); return; }
-    editor.setSite(site.removeVertex(editor.site, editor.siteSelection.i));
-    editor.siteSelection = null;
+    const err = editor.removeLotVertex(editor.siteSelection.i);
+    if (err) toast(err, 'error');
   }
-  function updateRoad(edge: number, patch: { name?: string; width?: number }) {
-    if (!editor) return;
-    editor.setSite({ ...editor.site, roads: (editor.site.roads ?? []).map((r) => (r.edge === edge ? { ...r, ...patch } : r)) });
-  }
-  let rectW = $state(20), rectD = $state(30);
-  function openSite() {
-    if (!editor) return;
-    rectW = editor.site.width; rectD = editor.site.depth;
-    sheet = 'site';
-  }
-  function resetLotRect() {
-    if (!editor) return;
-    const b = site.bounds(editor.site.boundary!);
-    editor.setSite(site.replaceBoundary(editor.site, site.rectBoundary(b.x, b.y, Math.max(3, rectW), Math.max(3, rectD))));
-    editor.siteSelection = null;
-  }
+  function openSite() { sheet = 'site'; }
   function startLotDrawing() {
     if (!editor) return;
     editor.mode = 'edit'; editor.tool = 'site'; editor.selection = null; editor.siteSelection = null;
@@ -237,8 +224,42 @@
     if (!editor) return;
     editor.tool = id;
     editor.drawingLot = false;
+    editor.drawingFootprint = false;
     if (id !== 'select') editor.selection = null;
-    if (id !== 'site') editor.siteSelection = null;
+    if (id !== 'site' && id !== 'footprint') editor.siteSelection = null;
+  }
+
+  // ---- footprints & floors ------------------------------------------------------------------------
+  const fpInfo = $derived.by(() => {
+    if (!editor?.floor.footprint) return null;
+    const c = containerFor(editor.plan, editor.floorIdx);
+    return { area: footprintArea(editor.floor.footprint), corners: editor.floor.footprint.length, inside: c.label };
+  });
+  function removeFpCorner() {
+    if (!editor || editor.siteSelection?.kind !== 'fp-vertex') return;
+    const err = editor.removeFootprintVertex(editor.siteSelection.i);
+    if (err) toast(err, 'error');
+  }
+  function startFootprintDrawing() {
+    if (!editor) return;
+    editor.mode = 'edit'; editor.tool = 'footprint'; editor.selection = null; editor.siteSelection = null;
+    editor.drawingFootprint = true; editor.draft = [];
+  }
+  function addFloor() {
+    if (!editor) return;
+    editor.addFloor();
+    selectTool('footprint');
+    const lv = floorLabel(editor.floor.level);
+    toast(`${lv} starts as a copy of the floor below. Drag its corners to make it smaller, then draw its rooms.`, 'info');
+  }
+  function regenerate() {
+    if (!editor) return;
+    if (!confirm('Change the floors and generate new layouts? The rooms on this plan will be replaced.')) return;
+    editor.pushHistory();
+    editor.plan.meta.stage = 'floors';
+    editor.plan.floors = editor.plan.floors.map((f) => ({ level: f.level, height: f.height, walls: [], rooms: [], openings: [], ...(f.footprint ? { footprint: f.footprint } : {}) }));
+    editor.onChange?.();
+    setTimeout(() => navigate(`/design/setup?id=${planId}`), 450);
   }
 
   function dismissCoach() { showCoach = false; storage.setPref('coach-done', true); }
@@ -272,13 +293,16 @@
       <button class="btn btn-accent btn-sm" onclick={() => (sheet = 'send')}>Send to architect</button>
     </div>
 
-    {#if ed.plan.floors.length > 1 || ed.floor.level > 0}
-      <div class="flex gap-1 px-3 py-1.5 bg-paper border-b border-line z-20 text-sm overflow-x-auto" role="tablist" aria-label="Floors">
+    <div class="flex items-center gap-1 px-3 py-1.5 bg-paper border-b border-line z-20 text-sm overflow-x-auto">
+      <div class="flex gap-1" role="tablist" aria-label="Floors">
         {#each ed.plan.floors as f, i}
-          <button role="tab" aria-selected={ed.floorIdx === i} class="px-3 py-1 rounded-full {ed.floorIdx === i ? 'bg-ink text-white' : 'hover:bg-paper-2'}" onclick={() => { ed.floorIdx = i; ed.selection = null; }}>{f.level === 0 ? 'Ground' : `Level ${f.level + 1}`}</button>
+          <button role="tab" aria-selected={ed.floorIdx === i} class="px-3 py-1 rounded-full whitespace-nowrap {ed.floorIdx === i ? 'bg-ink text-white' : 'hover:bg-paper-2'}" onclick={() => { ed.floorIdx = i; ed.selection = null; ed.siteSelection = null; }}>{f.level === 0 ? 'Ground' : `Level ${f.level + 1}`}{#if f.footprint}<span class="opacity-70">{` · ${footprintArea(f.footprint).toFixed(0)} m²`}</span>{/if}</button>
         {/each}
       </div>
-    {/if}
+      {#if ed.plan.meta.mode === 'pro' || !ed.plan.meta.stage}
+        <button class="px-3 py-1 rounded-full border border-dashed border-line whitespace-nowrap hover:bg-paper-2 disabled:opacity-40" onclick={addFloor} disabled={ed.plan.floors.length >= 3}>+ Add floor</button>
+      {/if}
+    </div>
 
     <div class="relative flex-1 min-h-0">
       {#if view === '2d'}
@@ -296,13 +320,15 @@
           {:else if ed.mode === 'comment'}💬 Tap any wall, room, door or window to leave a comment
           {:else if ed.tool === 'room' && ed.roomShape === 'polygon'}{roomPolyHint}
           {:else if ed.tool === 'site' && ed.drawingLot}{lotDrawHint}
+          {:else if ed.tool === 'footprint' && ed.drawingFootprint}{fpDrawHint}
+          {:else if ed.tool === 'footprint' && ed.floorIdx > 0}Drag the corners to shape {floorLabel(ed.floor.level)} · it has to stay inside the floor below (hatched)
           {:else}{toolHint[ed.tool]}{/if}
         </div>
       </div>
 
       {#if view === '2d' && ed.plan.site}
         <div class="absolute left-3 top-12 z-10">
-          <Compass northAngle={ed.plan.site.northAngle} caption={compassCaption} onstart={() => ed.pushHistory()} onrotate={(d) => setNorth(d, false)} onopen={openSite} />
+          <Compass northAngle={ed.plan.site.northAngle} caption={compassCaption} locked={ed.plan.site.source === 'map'} onstart={() => ed.pushHistory()} onrotate={(d) => setNorth(d, false)} onopen={openSite} />
         </div>
       {/if}
 
@@ -317,12 +343,26 @@
       {/if}
 
       <!-- outline being drawn (room of any shape, or a new lot) -->
-      {#if view === '2d' && ed.mode === 'edit' && ((ed.tool === 'room' && ed.roomShape === 'polygon') || (ed.tool === 'site' && ed.drawingLot)) && (ed.draft.length || ed.drawingLot)}
+      {#if view === '2d' && ed.mode === 'edit' && ((ed.tool === 'room' && ed.roomShape === 'polygon') || (ed.tool === 'site' && ed.drawingLot) || (ed.tool === 'footprint' && ed.drawingFootprint)) && (ed.draft.length || ed.drawingLot || ed.drawingFootprint)}
         <div class="absolute left-2 right-2 bottom-2 z-20 card px-3 py-2 shadow-lg flex items-center gap-2 flex-wrap" role="group" aria-label="Drawing an outline">
-          <span class="text-sm font-medium flex-1 min-w-32">{ed.tool === 'site' ? 'New lot outline' : 'New room'} · {ed.draft.length} corner{ed.draft.length === 1 ? '' : 's'}</span>
+          <span class="text-sm font-medium flex-1 min-w-32">{ed.tool === 'site' ? 'New lot outline' : ed.tool === 'footprint' ? `New ${floorLabel(ed.floor.level).toLowerCase()} footprint` : 'New room'} · {ed.draft.length} corner{ed.draft.length === 1 ? '' : 's'}</span>
           <button class="btn btn-ghost btn-sm" disabled={!ed.draft.length} onclick={() => canvas?.undoPoint()}>↶ Corner</button>
-          <button class="btn btn-ghost btn-sm" onclick={() => { canvas?.finishChain(); ed.drawingLot = false; }}>Cancel</button>
+          <button class="btn btn-ghost btn-sm" onclick={() => { canvas?.finishChain(); ed.drawingLot = false; ed.drawingFootprint = false; }}>Cancel</button>
           <button class="btn btn-primary btn-sm" disabled={ed.draft.length < 3} onclick={() => canvas?.closeShape()}>Done</button>
+        </div>
+      {:else if view === '2d' && ed.mode === 'edit' && ed.tool === 'footprint' && fpInfo}
+        {@const ss = ed.siteSelection}
+        <div class="absolute left-2 right-2 bottom-2 z-20 card px-3 py-2 shadow-lg flex items-center gap-2 flex-wrap" role="group" aria-label="Footprint">
+          {#if ss?.kind === 'fp-vertex'}
+            <span class="text-sm font-medium flex-1">Footprint corner · drag to move</span>
+            <button class="btn btn-ghost btn-sm" disabled={fpInfo.corners <= 3} onclick={removeFpCorner}>Remove corner</button>
+          {:else if ss?.kind === 'fp-edge' && ed.floor.footprint}
+            <span class="text-sm font-medium flex-1">Side · {site.edgeLength(ed.floor.footprint, ss.i).toFixed(2)} m · pull its ⊕ to add a corner</span>
+          {:else}
+            <span class="text-sm font-medium flex-1 min-w-32 truncate">{floorLabel(ed.floor.level)} footprint · {fpInfo.area.toFixed(0)} m² · inside {fpInfo.inside}</span>
+            <button class="btn btn-ghost btn-sm" onclick={startFootprintDrawing}>Redraw</button>
+            <button class="btn btn-primary btn-sm" onclick={() => selectTool(ed.plan.meta.mode === 'pro' ? 'room' : 'select')}>{ed.plan.meta.mode === 'pro' ? 'Draw rooms →' : 'Done'}</button>
+          {/if}
         </div>
       {:else if view === '2d' && ed.mode === 'edit' && ed.tool === 'site' && lotInfo}
         {@const ss = ed.siteSelection}
@@ -338,7 +378,7 @@
           {:else}
             <span class="text-sm font-medium flex-1 min-w-32 truncate">Lot · {lotInfo.area.toFixed(0)} m² · {lotInfo.presetLabel}{lotInfo.facing ? ` · main road on the ${lotInfo.facing.toLowerCase()}` : ''}</span>
             <button class="btn btn-soft btn-sm" onclick={openSite}>Roads & north</button>
-            <button class="btn btn-ghost btn-sm" onclick={startLotDrawing}>Redraw lot</button>
+            {#if lotInfo.site.source !== 'map'}<button class="btn btn-ghost btn-sm" onclick={startLotDrawing}>Redraw lot</button>{/if}
           {/if}
         </div>
       <!-- naming chips after creating a room -->
@@ -457,83 +497,27 @@
     </div>
   </BottomSheet>
 
-  <BottomSheet open={sheet === 'site'} title="Lot, roads & north" onclose={() => (sheet = null)}>
-    {#if lotInfo}
-      {@const st = lotInfo.site}
-      <div class="grid gap-5">
-        <div class="field"><span>Which sides of the lot face a road?</span>
-          <div class="flex flex-wrap gap-2" role="group" aria-label="Road layout">
-            <button class="chip" aria-pressed={lotInfo.preset.preset === 'single'} onclick={() => setPreset('single')}>One road</button>
-            <button class="chip" aria-pressed={lotInfo.preset.preset === 'corner'} onclick={() => setPreset('corner')}>Corner lot (L)</button>
-            <button class="chip" aria-pressed={lotInfo.preset.preset === 'double'} onclick={() => setPreset('double')}>Front & back</button>
-            {#if lotInfo.preset.preset === 'custom'}<span class="chip on">Custom</span>{/if}
-          </div>
-          {#if lotInfo.preset.preset === 'corner'}
-            <div class="flex flex-wrap items-center gap-2 mt-1" role="group" aria-label="Side road">
-              <span class="text-sm text-muted">Side road, seen from the main road:</span>
-              <button class="chip" aria-pressed={lotInfo.preset.side === 'left'} onclick={() => setPreset('corner', 'left')}>On the left</button>
-              <button class="chip" aria-pressed={lotInfo.preset.side === 'right'} onclick={() => setPreset('corner', 'right')}>On the right</button>
-            </div>
-          {/if}
-          <p class="text-sm text-muted">The main road is the one with the ➜ entrance. To pick any other side, use <strong>🧭 Lot & road</strong> and tap that side of the lot.</p>
-        </div>
-
-        {#if lotInfo.front !== null}
-          <div class="field"><span>The main road is on the {lotInfo.facing?.toLowerCase()} side. Change it:</span>
-            <div class="grid grid-cols-4 gap-2 max-w-xs" role="group" aria-label="Main road faces">
-              {#each site.COMPASS_POINTS as c}
-                <button class="chip justify-center" aria-pressed={lotInfo.facing === c.name} onclick={() => faceRoad(c.bearing)} title={c.name}>{c.label}</button>
-              {/each}
-            </div>
-          </div>
-        {/if}
-        <label class="field"><span>North: {Math.round(st.northAngle)}° from the top of the plan</span>
-          <input type="range" min="0" max="355" step="5" value={st.northAngle} class="accent-[#A4502F] h-11" oninput={(e) => setNorth(+(e.target as HTMLInputElement).value, false)} onpointerdown={() => ed.pushHistory()} onkeydown={() => ed.pushHistory()} />
-        </label>
-
-        {#if st.roads?.length}
-          <div class="grid gap-3">
-            {#each site.roadShapes(st) as r (r.edge)}
-              <div class="grid grid-cols-[1fr_auto] gap-2 items-end">
-                <label class="field"><span>{r.main ? 'Main road' : 'Road'} · {site.edgeFacing(st, r.edge)} side</span>
-                  <input class="input" value={st.roads.find((x) => x.edge === r.edge)?.name ?? ''} placeholder={r.name} onchange={(e) => updateRoad(r.edge, { name: (e.target as HTMLInputElement).value || undefined })} /></label>
-                <label class="field"><span>Width {r.width} m</span>
-                  <input type="range" min="3" max="20" step="0.5" value={r.width} class="accent-[#A4502F] h-11 w-28" onchange={(e) => updateRoad(r.edge, { width: +(e.target as HTMLInputElement).value })} /></label>
-              </div>
-            {/each}
-          </div>
-        {/if}
-
-        <div class="field"><span>Lot shape · {lotInfo.area.toFixed(0)} m², {st.boundary!.length} corners</span>
-          <div class="flex flex-wrap gap-2">
-            <button class="btn btn-soft btn-sm" onclick={() => { sheet = null; selectTool('site'); canvas?.fit(); }}>Edit corners</button>
-            <button class="btn btn-ghost btn-sm" onclick={startLotDrawing}>Redraw outline</button>
-          </div>
-          <div class="flex flex-wrap items-end gap-2 mt-2">
-            <label class="field w-24"><span>Width (m)</span><input class="input" type="number" min="3" max="300" step="0.5" bind:value={rectW} /></label>
-            <label class="field w-24"><span>Depth (m)</span><input class="input" type="number" min="3" max="300" step="0.5" bind:value={rectD} /></label>
-            <button class="btn btn-ghost btn-sm" onclick={resetLotRect}>Make it a rectangle</button>
-          </div>
-        </div>
-      </div>
-    {/if}
-  </BottomSheet>
+  <SiteSheet editor={ed} open={sheet === 'site'} onclose={() => (sheet = null)} onEditCorners={() => { sheet = null; selectTool('site'); canvas?.fit(); }} onRedraw={ed.plan.site?.source === 'map' ? undefined : startLotDrawing} onError={(m) => toast(m, 'error')} />
 
   <BottomSheet open={sheet === 'advanced'} title="Advanced" onclose={() => (sheet = null)}>
     <div class="grid gap-5">
-      <label class="flex items-center gap-3"><input type="checkbox" class="w-5 h-5 accent-[#A4502F]" bind:checked={ed.snapping} /> Snap to 10 cm grid and wall corners</label>
+      <label class="flex items-center gap-3"><input type="checkbox" class="w-5 h-5 accent-[#A4502F]" bind:checked={ed.snapping} /> Snap corners to the 1 m grid and to walls</label>
       <label class="flex items-center gap-3"><input type="checkbox" class="w-5 h-5 accent-[#A4502F]" bind:checked={ed.showDims} /> Show length of the selected wall</label>
       <label class="field"><span>New wall thickness: {(ed.newWallThickness * 100).toFixed(0)} cm</span><input type="range" min="0.08" max="0.35" step="0.01" bind:value={ed.newWallThickness} class="accent-[#A4502F] h-11" /></label>
       <label class="field"><span>Ceiling height: {ed.floor.height.toFixed(2)} m</span><input type="range" min="2.4" max="3.6" step="0.05" value={ed.floor.height} class="accent-[#A4502F] h-11" onchange={(e) => ed.commit((f) => { f.height = +(e.target as HTMLInputElement).value; }, { recompute: false })} /></label>
       <button class="btn btn-soft btn-sm justify-self-start" onclick={openSite}>🧭 Lot, roads & north…</button>
       <div class="flex gap-2 flex-wrap">
-        <button class="btn btn-soft btn-sm" onclick={() => ed.addFloor()} disabled={ed.plan.floors.length >= 3}>+ Add floor</button>
-        <button class="btn btn-ghost btn-sm" onclick={() => ed.removeFloor()} disabled={ed.plan.floors.length < 2}>Remove this floor</button>
+        {#if ed.plan.meta.mode === 'pro' || !ed.plan.meta.stage}
+          <button class="btn btn-soft btn-sm" onclick={() => { sheet = null; addFloor(); }} disabled={ed.plan.floors.length >= 3}>+ Add floor</button>
+          <button class="btn btn-ghost btn-sm" onclick={() => ed.removeFloor()} disabled={ed.plan.floors.length < 2}>Remove this floor</button>
+        {:else}
+          <button class="btn btn-soft btn-sm" onclick={regenerate}>Change floors & regenerate…</button>
+        {/if}
         <button class="btn btn-ghost btn-sm" onclick={exportSvg}>Export floor as SVG</button>
         <button class="btn btn-ghost btn-sm" onclick={() => downloadJSON($state.snapshot(ed.plan), 'planspec.json')}>Export PlanSpec JSON</button>
         <button class="btn btn-ghost btn-sm" onclick={() => { showCoach = true; sheet = null; }}>Show tips again</button>
       </div>
-      <p class="text-xs text-muted">Rooms and areas are detected automatically from the walls (openPlan3D room detection). Shortcuts: V move, R room, W wall, D door, N window, X remove, L lot & road, C comment, Ctrl+Z undo. While drawing an outline: Enter finishes, Backspace removes the last corner.</p>
+      <p class="text-xs text-muted">Rooms and areas are detected automatically from the walls (openPlan3D room detection). Shortcuts: V move, R room, W wall, D door, N window, X remove, F footprint, L lot & road, C comment, Ctrl+Z undo. While drawing an outline: Enter finishes, Backspace removes the last corner.</p>
     </div>
   </BottomSheet>
 {/if}

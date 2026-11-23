@@ -3,8 +3,10 @@
    * North arrow for the plan. Drag it round to set where north is; tap it to
    * open the lot & road settings.
    */
-  let { northAngle, caption = '', onstart, onrotate, onopen }: {
+  let { northAngle, caption = '', locked = false, onstart, onrotate, onopen }: {
     northAngle: number; caption?: string;
+    /** north comes from the map: it can't be turned by hand */
+    locked?: boolean;
     onstart: () => void; onrotate: (deg: number) => void; onopen: () => void;
   } = $props();
 
@@ -26,6 +28,7 @@
   function move(e: PointerEvent) {
     if (!drag || drag.id !== e.pointerId) return;
     if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 5) return;
+    if (locked) return;
     if (!drag.moved) { drag.moved = true; active = true; onstart(); }
     onrotate(angleAt(e));
   }
@@ -37,7 +40,7 @@
   }
   function key(e: KeyboardEvent) {
     const step = e.shiftKey ? 15 : 5;
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !locked) {
       e.preventDefault(); e.stopPropagation();
       onstart();
       onrotate((northAngle + (e.key === 'ArrowRight' ? step : -step) + 360) % 360);
@@ -47,9 +50,9 @@
 
 <div class="flex flex-col items-center gap-1 select-none">
   <button bind:this={el} type="button"
-    class="relative w-[68px] h-[68px] rounded-full bg-white/95 border border-line shadow-sm touch-none cursor-grab {active ? 'cursor-grabbing ring-2 ring-accent' : ''}"
-    aria-label={`Compass: north is ${Math.round(northAngle)}° from the top of the plan. Drag to rotate, arrow keys to adjust, click for lot and road settings.`}
-    title="Drag to set north · click for lot & road settings"
+    class="relative w-[68px] h-[68px] rounded-full bg-white/95 border border-line shadow-sm touch-none {locked ? 'cursor-pointer' : 'cursor-grab'} {active ? 'cursor-grabbing ring-2 ring-accent' : ''}"
+    aria-label={locked ? `Compass: north is ${Math.round(northAngle)}° from the top of the plan, taken from the map. Click for lot and road settings.` : `Compass: north is ${Math.round(northAngle)}° from the top of the plan. Drag to rotate, arrow keys to adjust, click for lot and road settings.`}
+    title={locked ? 'North from the map · click for lot & road settings' : 'Drag to set north · click for lot & road settings'}
     onpointerdown={down} onpointermove={move} onpointerup={up} onpointercancel={up} onkeydown={key}>
     <svg viewBox="-34 -34 68 68" class="absolute inset-0 w-full h-full" aria-hidden="true">
       <g transform={`rotate(${northAngle})`}>

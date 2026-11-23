@@ -12,8 +12,11 @@
   // Babylon.js and web-ifc only download on the viewer routes.
   const routes: Record<string, () => Promise<{ default: Component<any> }>> = {
     '/design': () => import('@features/design/DesignHome.svelte'),
-    '/design/creative': () => import('@features/design/CreativeWizard.svelte'),
-    '/design/chat': () => import('@features/design/ChatMode.svelte'),
+    '/design/setup': () => import('@features/design/setup/DesignFlow.svelte'),
+    // older links: start a new plan in that mode
+    '/design/creative': () => import('@features/design/setup/NewPlan.svelte'),
+    '/design/chat': () => import('@features/design/setup/NewPlan.svelte'),
+    '/design/sketch': () => import('@features/design/setup/NewPlan.svelte'),
     '/design/workspace': () => import('@features/design/workspace/Workspace.svelte'),
     '/viewer': () => import('@features/viewer/ViewerHome.svelte'),
     '/viewer/plan': () => import('@features/viewer/PlanView.svelte'),
@@ -21,7 +24,7 @@
     '/comments': () => import('@features/comments/CommentsPage.svelte'),
   };
 
-  const fullBleed = $derived(['/design/workspace', '/viewer/walk', '/viewer/plan'].includes($route.path));
+  const fullBleed = $derived(['/design/workspace', '/design/setup', '/viewer/walk', '/viewer/plan'].includes($route.path));
   const loader = $derived($route.path === '/' ? null : routes[$route.path]);
   const nav = [
     { to: '/design', label: 'Design', short: 'Design', match: '/design' },

@@ -9,11 +9,9 @@ const STYLES = ['modern', 'contemporary', 'scandinavian', 'industrial', 'coastal
 const QUESTIONS: Record<Essential, string> = {
   bedrooms: 'How many bedrooms would you like?',
   bathrooms: 'And how many bathrooms?',
-  area: 'Roughly how big should the home be? A floor area in m² is perfect (a typical family home is 120–180 m²).',
-  floors: 'Would you like everything on one level, or two or three storeys?',
 };
 const ASK_HINT: Record<Essential, RegExp> = {
-  bedrooms: /bedroom/i, bathrooms: /bathroom/i, area: /how big|floor area|m²/i, floors: /level|storey/i,
+  bedrooms: /bedroom/i, bathrooms: /bathroom/i,
 };
 
 function parseText(t: string, r: ParsedRequirements, asked: Essential | null) {
@@ -39,6 +37,9 @@ function parseText(t: string, r: ParsedRequirements, asked: Essential | null) {
     ['garage', /\b(garage|carport)\b/],
     ['laundry', /\b(laundry|utility room)\b/],
     ['open-plan', /\bopen[\s-]?plan\b/],
+    ['dining', /\b(dining room|separate dining|formal dining)\b/],
+    ['family', /\b(family room|rumpus|media room|playroom|second living)\b/],
+    ['powder', /\b(powder room|guest toilet|guest wc|separate toilet)\b/],
   ];
   for (const [id, re] of extras) {
     const word = re.source.replace(/\\b|\(|\)/g, '').split('|')[0];
@@ -46,6 +47,13 @@ function parseText(t: string, r: ParsedRequirements, asked: Essential | null) {
       if (neg(word) || neg(id)) r.extras = r.extras.filter((e) => e !== id);
       else if (!r.extras.includes(id)) r.extras.push(id);
     }
+  }
+  // how rooms relate to each other
+  if (/\b(master|main bed(?:room)?)\b[^.]*\b(downstairs|on the ground( floor)?|ground[- ]floor|ground level)\b/.test(s) || /\b(downstairs|ground[- ]floor)\b[^.]*\b(master|main bed(?:room)?)\b/.test(s)) {
+    if (!r.extras.includes('master-ground')) r.extras.push('master-ground');
+  }
+  if (/\b(living|lounge|family room|kitchen)\b[^.]*\b(at the back|to the back|(?:facing|faces|onto|looks? (?:onto|over|out to)) the (?:back ?yard|backyard|garden|back garden|rear))\b/.test(s) || /\b(back ?yard|garden)[- ]facing (living|lounge)\b/.test(s)) {
+    if (!r.extras.includes('living-back')) r.extras.push('living-back');
   }
   const style = STYLES.find((st) => s.includes(st));
   if (style) r.style = style;
@@ -55,7 +63,7 @@ function parseText(t: string, r: ParsedRequirements, asked: Essential | null) {
     const bare = s.match(/^(?:about|around|maybe|roughly|~)?\s*(\d+(?:\.\d+)?|one|two|three|four|five|six)\b/);
     if (bare && r[asked] === null) {
       const n = toNum(bare[1]);
-      if (Number.isFinite(n) && (asked !== 'area' || n >= 20)) r[asked] = n;
+      if (Number.isFinite(n)) r[asked] = n;
     }
   }
 }
@@ -83,12 +91,12 @@ export class RuleBasedProvider implements LLMProvider {
     const got: string[] = [];
     if (requirements.bedrooms) got.push(`${requirements.bedrooms} bedroom${requirements.bedrooms > 1 ? 's' : ''}`);
     if (requirements.bathrooms) got.push(`${requirements.bathrooms} bathroom${requirements.bathrooms > 1 ? 's' : ''}`);
-    if (requirements.area) got.push(`about ${requirements.area} m²`);
-    if (requirements.floors) got.push(requirements.floors === 1 ? 'on one level' : `over ${requirements.floors} storeys`);
-    const prefix = got.length ? `Got it — ${got.join(', ')}${requirements.extras.length ? ' plus ' + requirements.extras.join(', ') : ''}.` : "Thanks! Let's pin down the basics.";
+    const LABEL: Record<string, string> = { 'open-plan': 'open-plan living', 'master-ground': 'the main bedroom downstairs', 'living-back': 'living facing the garden', family: 'a family room', dining: 'a separate dining room', powder: 'a powder room' };
+    const ex = requirements.extras.map((e) => LABEL[e] ?? `a ${e}`);
+    const prefix = got.length || ex.length ? `Got it — ${[...got, ...ex].join(', ')}.` : "Thanks! Let's pin down the basics.";
     const assistantMessage = missingFields.length
       ? `${prefix}\n${QUESTIONS[missingFields[0]]}`
-      : `${prefix} That's everything I need. Check the details below and tap "Generate layouts" when you're ready.`;
+      : `${prefix} That's everything I need. Anything else, like more rooms or which rooms should be together? Otherwise check the details below and tap "Generate layouts".`;
     return { status: missingFields.length ? 'needs_clarification' : 'complete', requirements, assistantMessage, missingFields, provider: 'rule-based' };
   }
 }

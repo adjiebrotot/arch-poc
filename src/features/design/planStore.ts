@@ -1,6 +1,6 @@
 import { storage } from '@shared/storage/localAdapter';
 import type { PlanSpec } from '@shared/planspec/schema';
-import { PlanSpecSchema } from '@shared/planspec/schema';
+import { PlanSpecSchema, emptyPlan } from '@shared/planspec/schema';
 import { uid } from '@shared/util/id';
 import { navigate } from '@shared/router';
 import { compressToEncodedURIComponent, decompressFromEncodedURIComponent } from 'lz-string';
@@ -8,11 +8,25 @@ import type { Comment } from '@shared/comments/model';
 import { CommentListSchema } from '@shared/comments/model';
 import { z } from 'zod';
 
+/** Where a plan opens: the setup flow while its envelope / brief is being defined, else the workspace. */
+export const planPath = (id: string, stage?: PlanSpec['meta']['stage']) => (stage && stage !== 'design' ? `/design/setup?id=${id}` : `/design/workspace?id=${id}`);
+
 export async function savePlanAndOpen(plan: PlanSpec) {
   const id = plan.meta.id ?? uid('plan');
   const p = { ...plan, meta: { ...plan.meta, id, createdAt: new Date().toISOString() } };
   await storage.savePlan(id, p);
-  navigate(`/design/workspace?id=${id}`);
+  navigate(planPath(id, p.meta.stage));
+}
+
+const TITLES: Record<PlanSpec['meta']['mode'], string> = { pro: 'My sketch', creative: 'My home', chat: 'My home' };
+
+/** Start a new plan in a mode: every mode begins with the lot. */
+export async function startPlan(mode: PlanSpec['meta']['mode'], opts: { replace?: boolean } = {}) {
+  const plan = emptyPlan(mode, TITLES[mode]);
+  const id = uid('plan');
+  plan.meta.id = id;
+  await storage.savePlan(id, plan);
+  navigate(`/design/setup?id=${id}`, opts);
 }
 
 export const projectIdForPlan = (id: string) => `plan:${id}`;
