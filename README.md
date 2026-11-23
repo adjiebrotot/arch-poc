@@ -90,9 +90,9 @@ src/
     geo/           osm.ts (local metric frame, tiles, Nominatim search, Overpass roads, frontage detection)
   features/
     landing/
-    design/        DesignHome, planStore, PlanThumb
+    design/        DesignHome, planStore, PlanThumb, DesignCheck (rule report)
       setup/       DesignFlow (steps), LotStep, FloorsStep, TemplateBrief, ChatBrief, LayoutStep, NewPlan
-      generator/   raster.ts, program.ts, generator.ts, feasibility.ts, templates.ts
+      generator/   raster.ts, program.ts, generator.ts, rules.ts (design rules + checker), feasibility.ts, templates.ts
       llm/         WorkerProvider, RuleBasedProvider, MockProvider, FallbackProvider, Zod schemas
       engine/      openplan3dAdapter.ts, plan3d.ts (PlanSpec → 3D), planSvg.ts
       workspace/   Workspace, PlanCanvas (the one canvas for lots, footprints and rooms), MapTiles, SiteSheet, Compass, editor.svelte.ts (ops, history, anchors), Preview3D
@@ -159,11 +159,49 @@ A blank 1 m grid: tap the lot's corners. The side facing down the screen becomes
 * **Programme** (`generator/program.ts`): public rooms (entry, living, kitchen, dining, family room, garage), service rooms (study, laundry, powder room) and private rooms (main bedroom with ensuite and walk-in robe when there are 2+ bathrooms, bedrooms, bathrooms). On several floors the bedrooms go up, by the space each floor has; a bathroom goes on every floor with bedrooms, and the ground floor gets a powder room or guest bathroom. Spare space becomes a family room, study, retreat or storage; preferences such as *main bedroom downstairs* and *living faces the back garden* change the arrangement.
 * **Generator** (`generator/generator.ts`, `raster.ts`), deterministic and seeded (mulberry32):
   1. A local frame lines the grid up with the footprint's main wall direction and puts the lot's main street at the front. Each floor's wall line is rasterised into 25 cm cells, with the exact share of each cell inside the polygon, so diagonal and irregular sides are handled exactly.
-  2. A **hallway spine** is chosen so every part of the floor is within reach (about 6 m), the street side gets the public rooms and the quiet side the private ones. Wings out of reach (L, T, U shapes) get a **branch hallway**.
+  2. A **garage** (when asked for) is placed first, as a fixed rectangle a car fits in (3.25 × 6 m, or 5.75 × 6 m on larger floors) against the street side, then linked to the hallway. A **hallway spine** is chosen so every part of the floor is within reach (about 6 m), the street side gets the public rooms and the quiet side the private ones. Wings out of reach (L, T, U shapes) get a **branch hallway**.
   3. On multi-storey homes the **stairs** sit beside the spine, inside the smallest (top) footprint, in the same place on every floor, preferably against an outside wall; the landings stack over the ground-floor hallway.
-  4. Rooms reach **straight out** from a side of the hallway, so walls stay straight; each side is sliced along the hallway into rooms by target area (a balanced partition keeps sizes even across strips). Small wet rooms keep only the depth they need and the neighbouring bedroom wraps behind them; the main bedroom gets a strip for the ensuite and walk-in robe.
+  4. Rooms reach **straight out** from a side of the hallway, so walls stay straight; each side is sliced along the hallway into rooms by target area (a balanced partition keeps sizes even across strips). A strip only gets rooms whose clear rectangle fits its depth and whose minimum widths fit its length; living, kitchen and dining that can't each be wide enough become one **open-plan** room. Bedrooms and bathrooms grow only to their natural size; spare space becomes a study nook, retreat or storeroom. Rooms that must be rectangles (wet rooms, entry, robes) keep their largest rectangle that still opens onto their hallway. The main bedroom gets a strip for the ensuite and walk-in robe; an entry that ended up away from the street moves to the front facade.
   5. Walls are the boundaries between rooms, **clipped to the exact wall line**, so rooms meet diagonal outside walls exactly; rooms are then detected from the walls by the same openPlan3D engine the editor uses. Doors go on shared walls (living, kitchen and dining get wide openings), windows on outside walls, the garage door on the street side and the **front door faces the lot's entrance**.
-  6. Several seeded candidates are **scored** (every room reachable, daylight for habitable rooms, proportions, sizes, hallway share, entry and garage on the street) and the best distinct ones are offered. Same envelope + brief + seed ⇒ the same plan (tested).
+  6. Several seeded candidates are **judged against the design rules** (below): the ones that break no hard rule come first, then the fewest preference penalties; the best distinct ones are offered. Same envelope + brief + seed ⇒ the same plan (tested).
+* **Design rules** (`generator/rules.ts`) are written down once and used twice: the generator is ranked by them, and the client sees the report. Each layout card says *✓ All design rules met* or how many it breaks; the chosen layout shows the full **Design check** (what is broken, suggestions, and every rule with why it exists). If no layout can meet them all, the page says so plainly and suggests More options, a smaller brief or bigger floors. In the workspace, **📐 Check** runs the same checker on any plan, hand-drawn ones included; tapping a message selects that room. Hard rules must hold; soft rules (preferences) only rank layouts.
+
+  | Family | Hard rules | Preferences (soft) |
+  |---|---|---|
+  | **Shape** | the garage is a rectangle a car fits in (≥ 3.25 × 6 m, two cars ≥ 5.75 × 6 m) · bathrooms, ensuites, toilets, laundries, the entry and robes are plain rectangles (a slanted outside wall may cut one corner) · every room contains a usable clear rectangle (table below) · every door has a clear 0.8 × 0.8 m square on both sides | rooms keep simple shapes (bedrooms and kitchens at most an L) · rooms are not long and thin (per-kind aspect limit) |
+  | **Size** | minimum area per room kind (table below) | maximum area per kind · hallways stay under about 15 % of a floor |
+  | **Proportion** | the main bedroom is the largest bedroom · bathrooms are under 80 % of the smallest bedroom, an ensuite under 60 % of the main bedroom, a robe under 45 %; a laundry, toilet or storeroom is never bigger than a bedroom | secondary bedrooms within 1.5 × of each other · the living room is the largest room |
+  | **Placement** | bedrooms and bathrooms open off a hallway (never through living spaces, the garage or another bedroom); the ensuite and robe only through the main bedroom · every room is reachable from the front door · the garage door faces the street and the garage opens into the hallway, entry, laundry or kitchen · the front door faces the street and leads into the entry (or the hallway when there is no entry) · bedrooms and living rooms have a window · the kitchen shares a wall with the living or dining room · toilets don't open into kitchen or living areas · stairs open onto a hallway or landing | the main bedroom is not on the street side of the ground floor · wet rooms share walls (plumbing) · the laundry is near the kitchen, garage or bathrooms · kitchen, dining and study have windows |
+
+  | Room | Min m² | Max m² | Clear rectangle (m) | Shape |
+  |---|---|---|---|---|
+  | Main bedroom | 12 | 30 | 3.0 × 3.4 | at most an L |
+  | Bedroom | 9 | 20 | 2.7 × 3.0 | at most an L |
+  | Bathroom / ensuite | 4 / 3.5 | 10 / 8.5 | 1.6 × 2.1 / 1.5 × 2.0 | rectangle |
+  | Toilet (powder room) | 1.4 | 4.5 | 0.9 × 1.4 | rectangle |
+  | Laundry | 3.5 | 9 | 1.5 × 1.8 | rectangle |
+  | Kitchen | 7 | 25 | 2.4 × 2.7 | at most an L |
+  | Living / living & kitchen | 14 / 20 | 55 / 70 | 3.3 × 3.6 | free |
+  | Family room | 11 | 40 | 3.0 × 3.3 | free |
+  | Dining | 8 | 25 | 2.7 × 3.0 | at most an L |
+  | Study | 6 | 18 | 2.4 × 2.4 | at most an L |
+  | Retreat | 7 | 30 | 2.7 × 2.7 | at most an L |
+  | Entry | 2.5 | 14 | 1.4 × 1.8 | rectangle |
+  | Walk-in robe / storeroom | 1.8 / 1.2 | 7 / 9 | 1.1 × 1.4 / 0.9 × 1.2 | rectangle |
+
+* **How the rules were found: generate, judge, enforce.** A harness generated 12 seeded candidates on each of 14 test envelopes (rectangle, L, T, U, chamfered, trapezoid, narrow, turned 30°, two- and three-storey, a narrow townhouse; with and without garages) and ran the checker on all 168. Each round looked at the worst plans, named what was wrong, and changed the generator so it can't happen:
+
+  | What was wrong | Enforced by | Candidates breaking no hard rule |
+  |---|---|---|
+  | (first run, rules only scored) | | 9 / 168 |
+  | garages L-shaped or too shallow for a car; rooms squeezed narrower than a bed; a 12 cm sliver left between hallway and outside wall; a trapezoid's grid tilted to its slanted side | the garage is placed first as a fixed street-side rectangle linked to the hallway; one shared minimum-width rule (clear rectangle, minimum area at the strip's depth) for assigning rooms to strips and slicing them; grid aligned to the wall line; main wall direction = longest total wall length | about 30 |
+  | bathrooms and laundries with 6 to 8 corners, bigger than bedrooms; robes under 1 m²; kitchen without a door to the dining room; a retreat entered through the main bedroom; front door at a room's corner | wet rooms, entry and robes cut to their largest rectangle that still opens onto their hallway; spare space becomes a separate room instead of bloating a bedroom; ensuite strip uses full-depth columns; a pass adds doors until every room is reachable; front door kept clear of corners | 70 to 76 |
+  | bedrooms and powder rooms wrapped round the stairs | cells no hallway side reaches (behind the stairs, past a hallway's end) join one neighbour whole, a living space or the main bedroom first, never a wet room unless it stays a rectangle | 69 to 76 |
+  | T shape: the entry ended up behind a room, so the front door opened into the family room | the entry moves to a rectangle on the street facade beside the hallway, nearest the lot entrance | 81 (T: 0 → 12 of 12) |
+  | storerooms of 16 to 26 m² wrapped round the stairs | a storeroom that had to take a leftover pocket becomes a study nook or retreat | 83 |
+  | narrow townhouse: living, kitchen, dining, laundry and powder room as 0.75 to 2.75 m wide slivers side by side | when the living spaces can't each be wide enough, they become one open-plan room | 87 / 168; 13 of 14 envelopes |
+
+  Ranking by the rules then makes the **first layout offered break no hard rule on 13 of the 14 envelopes** (10 of them are asserted in `tests/rules.test.ts`, along with tests that break a good plan one rule at a time). The remaining one, 140 m² on one floor with a garage, 3 bedrooms and 2 bathrooms, genuinely can't fit (the best layout's main bedroom is 2.75 m deep); it is shown with the honest message above. Changes that made the numbers worse were reverted (splitting pockets by hallway side, treating deep sides as wings, capping living spaces).
 * **Tell us (chat)**: the envelope is already drawn, so the chat only needs **bedrooms and bathrooms**; it also picks up extra rooms (study, garage, laundry, dining, family room, powder room) and relationships (*main bedroom downstairs*, *living facing the back garden*). If the client mentions a size or number of floors that differs from the footprints, the assistant points out that the footprints set them. `FallbackProvider` tries the `WorkerProvider` (15 s timeout) and falls back to the `RuleBasedProvider` (regex/keywords, understands short answers like “2”) when the URL is unset, on errors, on HTTP 429 or on invalid output; fallback shows the badge “Offline mode – simplified parsing”. Parsed requirements appear as editable chips.
 
 #### The workspace
@@ -249,7 +287,7 @@ The repo ships `public/projects/duplex/` (the duplex IFC, version label, “Comp
 * **Performance on real phones is unverified.** It was checked only in headless Chromium with software WebGL (SwiftShader). The Low preset is designed for ≥30 fps on mid-range phones; confirm on real devices before relying on it.
 * **Drawings**: poché depends on the model's normals being consistent. Open or flipped IFC geometry can show dark patches. There are no dimensions, annotations or hatching standards yet.
 * **IFC**: very large models parse on the device. The single-thread WASM is slower than the multi-thread build. The simplified mode only drops furniture and small classes, with no mesh decimation.
-* **Generator**: rooms are arranged on a 25 cm grid aligned with the footprint's main wall direction, so inside walls stay square to it (diagonal outside walls are followed exactly). Very irregular footprints (deep U shapes, many wings) give valid but less elegant plans; a footprint much bigger than the brief gets very generous rooms plus a family room, study or storage. Stairs are a single 2.25 × 3 m dog-leg core in the same place on every floor. A generated plan is a starting point to edit, not a design.
+* **Generator**: rooms are arranged on a 25 cm grid aligned with the footprint's main wall direction, so inside walls stay square to it (diagonal outside walls are followed exactly). Very irregular footprints (deep U shapes, many wings) give valid but less elegant plans; a footprint much bigger than the brief gets generous living spaces plus study nooks, retreats or storage (the *Rooms are not oversized* preference flags them). Stairs are a single 2.25 × 3 m dog-leg core in the same place on every floor. The design rules are a reasonable residential baseline, not a building code: they don't check fire egress widths, accessibility, ceiling heights or local regulations. A generated plan is a starting point to edit, not a design.
 * **Map lots**: OpenStreetMap rarely has property boundaries, so the client traces the lot by eye over the map; accuracy is that of the tiles (about 0.3 m at zoom 19). Road detection needs the road to be in OSM and roughly parallel to a lot side, within about 28 m. The public tile server and Nominatim have usage policies meant for light use: point `VITE_TILE_URL` / `VITE_GEOCODER_URL` at a commercial or self-hosted service before real traffic.
 * **The rule-based chat parser** covers common phrasings only. The Worker is expected to do the heavy lifting.
 * **GLB** materials map to the curated library by name keywords. Embedded textures are not kept.

@@ -26,17 +26,28 @@ export const toPlan = (f: Frame, q: Vec2): Vec2 => {
 /** Rotate a direction (no translation). */
 export const dirToLocal = (f: Frame, v: Vec2): Vec2 => rotatePoint(v, f.angle);
 
-/** Main wall direction of a polygon, in degrees within (-45, 45]: the length-weighted mean of edge angles modulo 90°. */
+/**
+ * Main wall direction of a polygon, in degrees within (-45, 45]: the direction (modulo 90°) shared
+ * by the most wall length. A few slanted sides don't tilt the grid away from the square ones.
+ */
 export function dominantAngle(poly: Vec2[]): number {
-  let s = 0, c = 0;
+  const bins = new Map<number, { len: number; s: number; c: number }>();
   for (let i = 0; i < poly.length; i++) {
     const p = poly[i], q = poly[(i + 1) % poly.length];
     const L = dist(p, q);
-    const a = Math.atan2(q[1] - p[1], q[0] - p[0]) * 4;
-    s += L * Math.sin(a); c += L * Math.cos(a);
+    if (L < 1e-6) continue;
+    let a = (Math.atan2(q[1] - p[1], q[0] - p[0]) * 180) / Math.PI;
+    a = ((a % 90) + 90) % 90;
+    if (a > 45) a -= 90;
+    const key = Math.round(a * 2) / 2;
+    const b = bins.get(key) ?? { len: 0, s: 0, c: 0 };
+    b.len += L; b.s += L * Math.sin((a * 4 * Math.PI) / 180); b.c += L * Math.cos((a * 4 * Math.PI) / 180);
+    bins.set(key, b);
   }
-  if (Math.abs(s) < 1e-9 && Math.abs(c) < 1e-9) return 0;
-  let deg = (Math.atan2(s, c) * 180) / Math.PI / 4;
+  let best: { len: number; s: number; c: number } | null = null;
+  for (const b of bins.values()) if (!best || b.len > best.len) best = b;
+  if (!best) return 0;
+  let deg = (Math.atan2(best.s, best.c) * 180) / Math.PI / 4;
   if (Math.abs(deg) < 1e-6) deg = 0;
   return deg <= -45 ? deg + 90 : deg;
 }
@@ -58,10 +69,14 @@ export function chooseFrame(poly: Vec2[], front?: Vec2 | null): Frame {
   return { angle, origin };
 }
 
-/** A grid covering a local polygon, with lines on whole multiples of the cell size. */
+/**
+ * A grid covering a local polygon, starting exactly at the polygon's corner. Wall lines of
+ * footprints drawn on the 1 m grid are then all on cell boundaries, so no sliver of a cell is left
+ * between an inside wall and an outside wall.
+ */
 export function gridFor(polyLocal: Vec2[]): Grid {
   const xs = polyLocal.map((p) => p[0]), ys = polyLocal.map((p) => p[1]);
-  const x0 = Math.floor(Math.min(...xs) / CELL - 1e-6) * CELL, y0 = Math.floor(Math.min(...ys) / CELL - 1e-6) * CELL;
+  const x0 = Math.min(...xs), y0 = Math.min(...ys);
   return { x0, y0, nx: Math.ceil((Math.max(...xs) - x0) / CELL - 1e-6), ny: Math.ceil((Math.max(...ys) - y0) / CELL - 1e-6) };
 }
 

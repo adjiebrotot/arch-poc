@@ -8,7 +8,7 @@ import type { PlanSpec, Site } from '@shared/planspec/schema';
 import { normalizeSite, rectBoundary } from '@shared/planspec/site';
 import type { Vec2 } from '@shared/util/geometry';
 import { checkFeasibility, nearestFeasible, type ProgramInput } from './feasibility';
-import { generatePlan, type Envelope } from './generator';
+import { generateVariants, type Envelope } from './generator';
 
 export interface Template {
   id: string;
@@ -57,5 +57,6 @@ export function demoEnvelope(kind: 'family' | 'townhouse' | 'cottage' = 'family'
 export function templatePlan(id: string, seed = 7): PlanSpec {
   const t = TEMPLATES.find((x) => x.id === id) ?? TEMPLATES[0];
   const env = demoEnvelope(id === 'townhouse' ? 'townhouse' : id === 'cottage' ? 'cottage' : 'family');
-  return generatePlan({ envelope: env, bedrooms: t.bedrooms, bathrooms: t.bathrooms, extras: t.extras, seed, title: t.title });
+  // the best of several seeded candidates (design rules first), so demos meet every rule they can
+  return generateVariants({ envelope: env, bedrooms: t.bedrooms, bathrooms: t.bathrooms, extras: t.extras, title: t.title }, 1, seed, 16)[0];
 }

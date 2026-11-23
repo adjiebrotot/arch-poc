@@ -12,6 +12,8 @@
   import { footprintArea, containerFor } from '@shared/planspec/envelope';
   import * as site from '@shared/planspec/site';
   import BottomSheet from '@shared/ui/BottomSheet.svelte';
+  import DesignCheck from '../DesignCheck.svelte';
+  import { checkPlan } from '../generator/rules';
   import StateBox from '@shared/ui/StateBox.svelte';
   import CommentComposer from '@shared/comments/CommentComposer.svelte';
   import ThreadView from '@shared/comments/ThreadView.svelte';
@@ -32,7 +34,7 @@
   let saved = $state<'saved' | 'saving'>('saved');
   let Preview3D = $state<Component<any> | null>(null);
 
-  let sheet = $state<null | 'details' | 'compose' | 'thread' | 'send' | 'advanced' | 'list' | 'site'>(null);
+  let sheet = $state<null | 'details' | 'compose' | 'thread' | 'send' | 'advanced' | 'list' | 'site' | 'check'>(null);
   let pendingHit = $state<Hit | null>(null);
   let threadId = $state<string | null>(null);
   let namingRoom = $state<string | null>(null);
@@ -289,6 +291,7 @@
         <button class="px-3 min-h-9 rounded-full {view === '2d' ? 'bg-white shadow-sm' : 'text-ink-2'}" aria-pressed={view === '2d'} onclick={() => setView('2d')}>2D</button>
         <button class="px-3 min-h-9 rounded-full {view === '3d' ? 'bg-white shadow-sm' : 'text-ink-2'}" aria-pressed={view === '3d'} onclick={() => setView('3d')}>3D</button>
       </div>
+      <button class="btn btn-ghost btn-sm" onclick={() => (sheet = 'check')} title="Check the plan against the design rules">📐 Check</button>
       <button class="btn btn-ghost btn-sm" onclick={() => (sheet = 'list')} aria-label={`Comments (${openCount} open)`}>💬 {openCount}</button>
       <button class="btn btn-accent btn-sm" onclick={() => (sheet = 'send')}>Send to architect</button>
     </div>
@@ -498,6 +501,16 @@
   </BottomSheet>
 
   <SiteSheet editor={ed} open={sheet === 'site'} onclose={() => (sheet = null)} onEditCorners={() => { sheet = null; selectTool('site'); canvas?.fit(); }} onRedraw={ed.plan.site?.source === 'map' ? undefined : startLotDrawing} onError={(m) => toast(m, 'error')} />
+
+  <BottomSheet open={sheet === 'check'} title="Design check" onclose={() => (sheet = null)}>
+    {#if sheet === 'check'}
+      {@const report = checkPlan($state.snapshot(ed.plan) as PlanSpec)}
+      <div class="grid gap-3">
+        <p class="text-sm text-ink-2">The plan is checked against the same rules the layout generator follows: room shapes, minimum and maximum sizes, proportions between rooms, and where rooms sit for privacy, security and convenience. Tap a room in a message to select it.</p>
+        <DesignCheck {report} onroom={(id, level) => { const fi = ed.plan.floors.findIndex((f) => f.level === (level ?? ed.floor.level)); if (fi >= 0) ed.floorIdx = fi; ed.mode = 'edit'; selectTool('select'); ed.selection = { kind: 'room', id }; setView('2d'); sheet = null; }} />
+      </div>
+    {/if}
+  </BottomSheet>
 
   <BottomSheet open={sheet === 'advanced'} title="Advanced" onclose={() => (sheet = null)}>
     <div class="grid gap-5">

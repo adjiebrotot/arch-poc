@@ -150,7 +150,9 @@ function fill(rs: RoomSpec[], cap: number, level: number): RoomSpec[] {
     ? [() => (out.some((r) => r.name === 'Family room') ? null : mk('family')), () => (out.some((r) => r.type === 'study') ? null : mk('study')), () => mk('storage')]
     : [() => (out.some((r) => r.name === 'Retreat') ? null : mk('retreat')), () => (out.some((r) => r.type === 'study') ? null : mk('study', { zone: 2 })), () => mk('storage')];
   let k = 0;
-  while (cap / sum(out) > 1.6 && k < extras.length) {
+  // only for floors far bigger than the brief: spare space is otherwise handled strip by strip
+  // in the layout, where its shape is known
+  while (cap / sum(out) > 2.4 && k < extras.length) {
     const r = extras[k++]();
     if (r && cap - sum(out) >= r.target * 1.4) out.push(r);
   }

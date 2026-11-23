@@ -5,7 +5,9 @@
   import type { Editor } from '../workspace/editor.svelte';
   import { generateVariants, envelopeOfPlan, applyLayout, type Brief } from '../generator/generator';
   import { describe, envelopeOf } from '../generator/feasibility';
+  import { checkPlan } from '../generator/rules';
   import PlanThumb from '../PlanThumb.svelte';
+  import DesignCheck from '../DesignCheck.svelte';
 
   let { editor, brief, onback, onopen }: { editor: Editor; brief: Brief & { style?: string; notes?: string }; onback: () => void; onopen: (p: PlanSpec) => void } = $props();
 
@@ -15,6 +17,9 @@
   let error = $state('');
   let batch = $state(0);
   const env = untrack(() => envelopeOf(editor.plan));
+  // every layout is judged against the design rules (generator/rules.ts)
+  const reports = $derived(variants.map((v) => checkPlan(v)));
+  const anyClean = $derived(reports.some((r) => r.hard === 0));
 
   function run() {
     busy = true;
@@ -60,14 +65,33 @@
         <div class="flex gap-2"><button class="btn btn-soft btn-sm" onclick={onback}>← Change the brief</button></div>
       </div>
     {:else}
+      {#if !anyClean}
+        <div class="card p-4 grid gap-2 border-[color:var(--color-warn)]" role="status">
+          <p class="font-semibold text-warn">None of these layouts meets every design rule</p>
+          <p class="text-ink-2">These floors are tight for {describe({ ...brief, floors: env.floors })}: the rooms can't all get their minimum size, shape and position at once. Each layout below says what it breaks. Try <b>More options</b>, a smaller brief (fewer bedrooms or extras), or bigger or simpler floor shapes.</p>
+          <div class="flex gap-2 flex-wrap"><button class="btn btn-soft btn-sm" onclick={onback}>← Change the brief</button></div>
+        </div>
+      {/if}
       <div class="grid md:grid-cols-2 gap-4" role="radiogroup" aria-label="Layout variants">
         {#each variants as v, i}
+          {@const rep = reports[i]}
           <button class="card p-3 text-left grid gap-2 {chosen === i ? 'outline outline-3 outline-accent border-accent' : 'hover:border-ink'}" role="radio" aria-checked={chosen === i} onclick={() => (chosen = i)} ondblclick={open}>
             <PlanThumb plan={v} />
             <div class="px-1 text-sm flex justify-between gap-2"><span class="font-semibold">Layout {String.fromCharCode(65 + i)}</span><span class="text-muted">{v.floors.reduce((s, f) => s + f.rooms.filter((r) => r.type !== 'hallway' && r.type !== 'stairs').length, 0)} rooms</span></div>
+            {#if rep}
+              <div class="px-1 text-xs font-semibold {rep.hard ? 'text-danger' : 'text-ok'}">
+                {rep.hard ? `⚠ ${rep.results.filter((r) => r.severity === 'hard' && !r.ok).length} design rule${rep.results.filter((r) => r.severity === 'hard' && !r.ok).length === 1 ? '' : 's'} not met` : '✓ All design rules met'}{rep.soft ? ` · ${rep.soft} suggestion${rep.soft === 1 ? '' : 's'}` : ''}
+              </div>
+            {/if}
           </button>
         {/each}
       </div>
+      {#if reports[chosen]}
+        <section class="card p-4 grid gap-2" aria-label="Design check for the chosen layout">
+          <h2 class="font-semibold">Design check · Layout {String.fromCharCode(65 + chosen)}</h2>
+          <DesignCheck report={reports[chosen]} />
+        </section>
+      {/if}
     {/if}
     <div class="flex justify-between gap-2 sticky bottom-3">
       <button class="btn btn-ghost bg-paper" onclick={onback}>← Brief</button>
