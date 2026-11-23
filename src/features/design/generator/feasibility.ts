@@ -7,26 +7,39 @@
  */
 import type { PlanSpec } from '@shared/planspec/schema';
 import { footprintArea } from '@shared/planspec/envelope';
+import { buildProgram } from './program';
+import { ROOM_RULES, kindOf } from './rules';
 
 export const FEASIBILITY = {
-  /** Minimum net room areas in m². */
+  /** Minimum net room areas in m²: the same minimums the design rules enforce (generator/rules.ts). */
   minArea: {
     master: 12,
+    ensuite: 3.5,
+    robe: 1.8,
     bedroom: 9,
     bathroom: 4,
-    kitchen: 6,
+    kitchen: 7,
     living: 14,
-    study: 7,
-    garage: 18,
-    laundry: 4,
-    dining: 9,
-    family: 12,
-    powder: 2.2,
+    entry: 2.5,
+    study: 6,
+    garage: 19.5,
+    laundry: 3.5,
+    dining: 8,
+    family: 11,
+    powder: 1.4,
   },
   /** Hallways and circulation, as a share of the net room area. */
   circulation: 0.15,
   /** Allowance for wall thickness, as a share of the area incl. circulation. */
   wallAllowance: 0.12,
+  /**
+   * Rooms can't all sit at their exact minimum and still meet every design rule (clear rectangles,
+   * proportions, rectangles for wet rooms…): the layout needs slack, and bigger briefs need
+   * proportionally more (more rooms, more hallway, harder fits). Calibrated by generating layouts:
+   * fit = base + perM2 × net room area. A 1 bed 1 bath needs about 65 m², a 3 bed 2 bath about
+   * 110 m², 3 bed 2 bath with a garage about 155 m² on one floor.
+   */
+  fit: { base: 1.25, perM2: 0.0025 },
   /** Stairs footprint in m², added once per extra floor (2.25 × 3 m dog-leg stair). */
   stairsPerExtraFloor: 7,
   /** Open-plan living merges kitchen + living and saves a wall's worth of space. */
@@ -97,11 +110,14 @@ export function envelopeOf(plan: Pick<PlanSpec, 'floors'>): { area: number; floo
   return { area: plates.reduce((a, b) => a + b, 0), floors: plates.length, plates };
 }
 
-/** Net minimum area of the rooms themselves. */
+/** Net minimum area of the rooms themselves (as the generator's programme builds them). */
 export function netProgramArea(p: Omit<ProgramInput, 'area'>): number {
   const m = FEASIBILITY.minArea;
-  let net = m.living + m.kitchen + m.bathroom * Math.max(1, p.bathrooms);
+  const suite = p.bathrooms >= 2;
+  // with 2+ bathrooms one of them is the main bedroom's ensuite, with a walk-in robe
+  let net = m.living + m.kitchen + m.bathroom * Math.max(1, p.bathrooms - (suite ? 1 : 0)) + (suite ? m.ensuite + m.robe : 0);
   if (p.bedrooms >= 1) net += m.master + m.bedroom * (p.bedrooms - 1);
+  if (p.floors > 1 || p.bedrooms >= 3) net += m.entry;
   for (const e of p.extras) {
     const ex = EXTRAS.find((x) => x.id === e);
     if (ex) net += ex.area;
@@ -109,11 +125,33 @@ export function netProgramArea(p: Omit<ProgramInput, 'area'>): number {
   return net;
 }
 
+const grossOf = (net: number) => net * (1 + FEASIBILITY.circulation) * (1 + FEASIBILITY.wallAllowance) * (FEASIBILITY.fit.base + FEASIBILITY.fit.perM2 * net);
+
 /** Gross area required: rooms + circulation + walls + stairs. */
 export function requiredArea(p: Omit<ProgramInput, 'area'>): number {
-  const net = netProgramArea(p);
-  const gross = net * (1 + FEASIBILITY.circulation) * (1 + FEASIBILITY.wallAllowance);
-  return Math.round(gross + FEASIBILITY.stairsPerExtraFloor * Math.max(0, p.floors - 1));
+  return Math.round(grossOf(netProgramArea(p)) + FEASIBILITY.stairsPerExtraFloor * Math.max(0, p.floors - 1));
+}
+
+/**
+ * On several floors each one must hold the rooms the programme puts on it (bedrooms go up, the
+ * living spaces and garage stay down): the first floor that can't, and what it would need.
+ */
+export function floorShortfall(p: ProgramInput): { index: number; need: number } | null {
+  if (!p.plates || p.plates.length < 2) return null;
+  const progs = buildProgram({ bedrooms: p.bedrooms, bathrooms: p.bathrooms, extras: p.extras }, p.plates.map((a) => a * 0.95));
+  for (let i = 0; i < progs.length; i++) {
+    let net = 0;
+    for (const r of progs[i].rooms) {
+      // rooms the programme only adds to fill spare space don't count
+      if (r.name === 'Storage' || r.name === 'Retreat' || r.name === 'Sitting room') continue;
+      if (r.name === 'Family room' && !p.extras.includes('family')) continue;
+      if (r.type === 'study' && !p.extras.includes('study')) continue;
+      net += r.type === 'garage' ? FEASIBILITY.minArea.garage : (ROOM_RULES[kindOf(r)]?.min ?? 0) + (r.suite ? FEASIBILITY.minArea.ensuite + FEASIBILITY.minArea.robe : 0);
+    }
+    const need = Math.round(grossOf(net) + FEASIBILITY.stairsPerExtraFloor);
+    if (need > p.plates[i]) return { index: i, need };
+  }
+  return null;
 }
 
 export function checkFeasibility(p: ProgramInput): FeasibilityResult {
@@ -130,6 +168,8 @@ export function checkFeasibility(p: ProgramInput): FeasibilityResult {
     return { ok: false, required, reason: `Each floor would be under ${FEASIBILITY.minFloorPlate} m² — try fewer floors.` };
   }
   if (required > p.area) return { ok: false, required, reason: `Needs ~${roundUp5(required)} m²+` };
+  const short = floorShortfall(p);
+  if (short) return { ok: false, required, reason: `${short.index === 0 ? 'The ground floor' : `Level ${short.index + 1}`} needs ~${roundUp5(short.need)} m²+ for its rooms` };
   return { ok: true, required };
 }
 

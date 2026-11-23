@@ -8,7 +8,7 @@ import type { PlanSpec, Site } from '@shared/planspec/schema';
 import { normalizeSite, rectBoundary } from '@shared/planspec/site';
 import type { Vec2 } from '@shared/util/geometry';
 import { checkFeasibility, nearestFeasible, type ProgramInput } from './feasibility';
-import { generateVariants, type Envelope } from './generator';
+import { generateLayouts, type Envelope } from './generator';
 
 export interface Template {
   id: string;
@@ -40,8 +40,13 @@ export function fitTemplate(t: Template, env: Pick<ProgramInput, 'area' | 'floor
 
 const lot = (w: number, d: number): Site => normalizeSite({ width: w, depth: d, northAngle: 0, boundary: rectBoundary(0, 0, w, d), roads: [{ edge: 2 }], entrance: { edge: 2, t: 0.5 }, source: 'grid' });
 
-/** An L-shaped single-storey home on a 24 × 34 m lot (street at the bottom). */
-export function demoEnvelope(kind: 'family' | 'townhouse' | 'cottage' = 'family'): Envelope {
+/**
+ * Demo envelopes (street at the bottom): an L-shaped single-storey home on a 24 × 34 m lot, a
+ * broader L for the Entertainer (its deep living wing needs the width), a two-storey townhouse and
+ * a small cottage.
+ */
+export function demoEnvelope(kind: 'family' | 'entertainer' | 'townhouse' | 'cottage' = 'family'): Envelope {
+  if (kind === 'entertainer') return { site: lot(24, 34), floors: [{ level: 0, height: 2.7, footprint: [[3, 6], [21, 6], [21, 18], [13, 18], [13, 23], [3, 23]] }] };
   if (kind === 'townhouse') {
     const g: Vec2[] = [[3, 8], [15, 8], [15, 22], [3, 22]];
     const u: Vec2[] = [[3, 8], [15, 8], [15, 18], [3, 18]];
@@ -56,7 +61,8 @@ export function demoEnvelope(kind: 'family' | 'townhouse' | 'cottage' = 'family'
 /** A ready-made plan for a template on its demo envelope (samples, tests). */
 export function templatePlan(id: string, seed = 7): PlanSpec {
   const t = TEMPLATES.find((x) => x.id === id) ?? TEMPLATES[0];
-  const env = demoEnvelope(id === 'townhouse' ? 'townhouse' : id === 'cottage' ? 'cottage' : 'family');
-  // the best of several seeded candidates (design rules first), so demos meet every rule they can
-  return generateVariants({ envelope: env, bedrooms: t.bedrooms, bathrooms: t.bathrooms, extras: t.extras, title: t.title }, 1, seed, 16)[0];
+  const env = demoEnvelope(id === 'townhouse' || id === 'cottage' || id === 'entertainer' ? id : 'family');
+  // the best seeded candidate that meets every design rule (demos are held to the same standard)
+  const r = generateLayouts({ envelope: env, bedrooms: t.bedrooms, bathrooms: t.bathrooms, extras: t.extras, title: t.title }, 1, seed, 16, 64);
+  return r.plans[0] ?? r.closest!.plan;
 }

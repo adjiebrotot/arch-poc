@@ -104,6 +104,15 @@
     go('layout');
   }
 
+  /** The client took one of the briefs that fit (offered when theirs has no sound layout). */
+  function rebrief(b: Brief) {
+    if (!editor || !brief) return;
+    brief = { ...brief, bedrooms: b.bedrooms, bathrooms: b.bathrooms, extras: [...b.extras] };
+    const r = editor.plan.requirements;
+    if (r) editor.plan.requirements = { ...r, bedrooms: b.bedrooms, bathrooms: b.bathrooms, extras: [...b.extras] };
+    editor.onChange?.();
+  }
+
   function onkeydown(e: KeyboardEvent) {
     if (!editor || e.defaultPrevented) return;
     const t = e.target as HTMLElement;
@@ -158,7 +167,7 @@
       {:else if stage === 'brief'}
         <ChatBrief editor={ed} {planId} onback={() => go('floors')} ongenerate={generated} />
       {:else if stage === 'layout' && brief}
-        <LayoutStep editor={ed} {brief} onback={() => go('brief')} onopen={openLayout} />
+        {#key brief}<LayoutStep editor={ed} {brief} onback={() => go('brief')} onopen={openLayout} onbrief={rebrief} />{/key}
       {:else}
         <div class="p-8 max-w-xl mx-auto"><StateBox kind="empty" title="Nothing to show here yet"><button class="underline" onclick={() => go('brief')}>Back to the brief</button></StateBox></div>
       {/if}

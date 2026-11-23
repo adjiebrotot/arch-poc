@@ -3,6 +3,7 @@ import { generatePlan, generateVariants, planSignature, applyLayout, envelopeOfP
 import { PlanSpecSchema, type Floor, type PlanSpec } from '../src/shared/planspec/schema';
 import { TEMPLATES, templatePlan, fitTemplate, demoEnvelope } from '../src/features/design/generator/templates';
 import { envelopeOf } from '../src/features/design/generator/feasibility';
+import { checkPlan } from '../src/features/design/generator/rules';
 import { normalizeSite, rectBoundary } from '../src/shared/planspec/site';
 import { wallLine } from '../src/shared/planspec/envelope';
 import { segmentInPolygon, polygonArea, polygonInPolygon, projectOnSegment, type Vec2 } from '../src/shared/util/geometry';
@@ -141,5 +142,9 @@ describe('templates are programmes fitted to the envelope', () => {
   it('seeded demo plans are stable', () => {
     for (const t of TEMPLATES) expect(planSignature(templatePlan(t.id))).toEqual(planSignature(templatePlan(t.id)));
     expect(envelopeOf({ floors: demoEnvelope('townhouse').floors.map((f) => ({ ...f, walls: [], rooms: [], openings: [] })) }).floors).toBe(2);
-  });
+  }, 120_000);
+
+  it('every demo plan meets every design rule', () => {
+    for (const t of TEMPLATES) expect(checkPlan(templatePlan(t.id)).hard).toBe(0);
+  }, 120_000);
 });

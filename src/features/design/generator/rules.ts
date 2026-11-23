@@ -71,6 +71,9 @@ export const ROOM_RULES: Partial<Record<Kind, { min: number; max: number; clear:
 export const GARAGE = { single: [3.25, 6.0] as [number, number], double: [5.75, 6.0] as [number, number], doorSingle: 2.4, doorDouble: 4.8, maxArea: 42 };
 /** Every door opens onto a clear square this big on both sides. */
 export const DOOR_CLEAR = 0.8;
+/** Widest a hallway may be anywhere (m), and how far over its maximum a room may grow. */
+export const HALL_MAX = 2.6;
+export const OVERSIZE = 1.5;
 
 // ---------------------------------------------------------------------------------------------
 // geometry helpers on the finished plan
@@ -229,6 +232,16 @@ export const RULES: Rule[] = [
     }),
   },
   {
+    id: 'room-corners', kind: 'shape', severity: 'hard', title: 'No room has more than 8 corners',
+    why: 'An L with a notch or two is livable; beyond 8 corners a room is leftover space wrapped round other rooms.',
+    check: (a) => a.rooms.filter((r) => r.kind !== 'hall' && r.kind !== 'open' && r.kind !== 'stairs').flatMap((r) => (r.corners > 8 ? [at(r, `${r.corners} corners`)] : [])),
+  },
+  {
+    id: 'hall-corridor', kind: 'shape', severity: 'hard', title: 'Hallways are corridors, not rooms',
+    why: `A hallway wider than ${HALL_MAX} m anywhere is space nobody lives in: it should be a room, or part of one.`,
+    check: (a) => a.rooms.filter((r) => r.kind === 'hall').flatMap((r) => (containsRect(r.local, HALL_MAX + 0.01, HALL_MAX + 0.01) ? [at(r, `is wider than ${HALL_MAX} m in places`)] : [])),
+  },
+  {
     id: 'proportions', kind: 'shape', severity: 'soft', title: 'Rooms are not long and thin',
     why: 'A room much longer than it is wide is a corridor with furniture in it.',
     check: (a) => a.rooms.flatMap((r) => {
@@ -270,6 +283,14 @@ export const RULES: Rule[] = [
     check: (a) => a.rooms.flatMap((r) => {
       const rule = r.kind === 'garage' ? { max: GARAGE.maxArea } : ROOM_RULES[r.kind];
       return rule && r.room.area > rule.max ? [at(r, `${fmt(r.room.area)} m², over ${rule.max} m²`, (r.room.area / rule.max - 1) * 20)] : [];
+    }),
+  },
+  {
+    id: 'way-oversized', kind: 'size', severity: 'hard', title: 'No room is grossly oversized',
+    why: `More than ${OVERSIZE} × a room's largest sensible size (a 30 m² study, a 45 m² kitchen) means spare space was dumped into it: it should be another room.`,
+    check: (a) => a.rooms.flatMap((r) => {
+      const rule = r.kind === 'garage' ? { max: GARAGE.maxArea } : ROOM_RULES[r.kind];
+      return rule && r.room.area > rule.max * OVERSIZE ? [at(r, `${fmt(r.room.area)} m², more than ${OVERSIZE} × ${rule.max} m²`)] : [];
     }),
   },
   {

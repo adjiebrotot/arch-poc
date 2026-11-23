@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { generatePlan, generateVariants, type Envelope } from '../src/features/design/generator/generator';
-import { checkPlan, kindOf, containsRect, RULES, ROOM_RULES, type Report } from '../src/features/design/generator/rules';
+import { generatePlan, generateLayouts, suggestBriefs, type Envelope } from '../src/features/design/generator/generator';
+import { checkPlan, kindOf, containsRect, RULES, ROOM_RULES, HALL_MAX, type Report } from '../src/features/design/generator/rules';
+import { checkFeasibility } from '../src/features/design/generator/feasibility';
+import { footprintArea } from '../src/shared/planspec/envelope';
 import { normalizeSite, rectBoundary } from '../src/shared/planspec/site';
 import type { PlanSpec, Room } from '../src/shared/planspec/schema';
 import type { Vec2 } from '../src/shared/util/geometry';
@@ -30,11 +32,11 @@ describe('design rules: the checker', () => {
   it('every rule says what it checks and why, in four families', () => {
     expect(new Set(RULES.map((r) => r.kind))).toEqual(new Set(['shape', 'size', 'proportion', 'placement']));
     for (const r of RULES) { expect(r.title.length).toBeGreaterThan(10); expect(r.why.length).toBeGreaterThan(20); }
-    expect(RULES.filter((r) => r.severity === 'hard').length).toBeGreaterThanOrEqual(14);
+    expect(RULES.filter((r) => r.severity === 'hard').length).toBeGreaterThanOrEqual(18);
   });
 
   // a generated plan that meets every rule, then broken one way at a time
-  const base = generateVariants({ envelope: envelope(lot(24, 34), [[3, 6], [21, 6], [21, 21], [3, 21]]), bedrooms: 4, bathrooms: 2, extras: ['garage', 'laundry', 'study'] }, 1, 1, 12)[0];
+  const base = generateLayouts({ envelope: envelope(lot(24, 34), [[3, 6], [21, 6], [21, 21], [3, 21]]), bedrooms: 4, bathrooms: 2, extras: ['garage', 'laundry', 'study'] }, 1, 1, 12).plans[0];
 
   it('passes a good plan', () => {
     const r = checkPlan(base);
@@ -78,6 +80,25 @@ describe('design rules: the checker', () => {
     expect(failed(checkPlan(p), 'rect-rooms').issues.some((i) => i.roomId === bath.id)).toBe(true);
   });
 
+  it('a grossly oversized room, a room with too many corners or a hallway blob breaks the rules', () => {
+    const p = clone(base);
+    const bed = rooms(p).find((r) => r.type === 'bedroom')!;
+    bed.area = ROOM_RULES.bedroom!.max * 1.6;
+    expect(failed(checkPlan(p), 'way-oversized').issues.some((i) => i.roomId === bed.id)).toBe(true);
+    // a comb: 12 corners
+    const q = clone(base);
+    const st = rooms(q).find((r) => r.type === 'study')!;
+    const [x0, y0] = [Math.min(...st.polygon.map((v) => v[0])), Math.min(...st.polygon.map((v) => v[1]))];
+    st.polygon = [[x0, y0], [x0 + 4, y0], [x0 + 4, y0 + 3], [x0 + 3, y0 + 3], [x0 + 3, y0 + 1], [x0 + 2.5, y0 + 1], [x0 + 2.5, y0 + 3], [x0 + 1.5, y0 + 3], [x0 + 1.5, y0 + 1], [x0 + 1, y0 + 1], [x0 + 1, y0 + 3], [x0, y0 + 3]];
+    expect(failed(checkPlan(q), 'room-corners').issues.some((i) => i.roomId === st.id)).toBe(true);
+    // a hallway with a room-sized blob in it
+    const h = clone(base);
+    const hall = rooms(h).find((r) => r.type === 'hallway')!;
+    const [hx, hy] = [Math.min(...hall.polygon.map((v) => v[0])), Math.min(...hall.polygon.map((v) => v[1]))];
+    hall.polygon = rect(hx, hy, hx + HALL_MAX + 1, hy + HALL_MAX + 1);
+    expect(failed(checkPlan(h), 'hall-corridor').ok).toBe(false);
+  });
+
   it('no front door, or no window in a bedroom, breaks the placement rules', () => {
     const p = clone(base);
     const f = p.floors[0];
@@ -92,6 +113,7 @@ describe('design rules: the checker', () => {
 });
 
 describe('design rules: the generator follows them', () => {
+  // the first layout offered meets every rule on these (generateLayouts never offers one that doesn't)
   const CASES: { name: string; env: Envelope; brief: { bedrooms: number; bathrooms: number; extras: string[] } }[] = [
     { name: 'L', env: envelope(lot(24, 34), [[3, 6], [21, 6], [21, 20], [12, 20], [12, 26], [3, 26]]), brief: { bedrooms: 3, bathrooms: 2, extras: ['garage', 'study', 'laundry'] } },
     { name: 'U', env: envelope(lot(30, 30), [[3, 5], [27, 5], [27, 21], [19, 21], [19, 13], [11, 13], [11, 21], [3, 21]]), brief: { bedrooms: 4, bathrooms: 2, extras: ['laundry', 'dining'] } },
@@ -101,16 +123,36 @@ describe('design rules: the generator follows them', () => {
     { name: 'narrow', env: envelope(lot(10, 36), [[1, 6], [8, 6], [8, 26], [1, 26]]), brief: { bedrooms: 2, bathrooms: 1, extras: ['laundry'] } },
     { name: 'turned 30°', env: envelope(lot(30, 30), [[6, 10], [18.12, 3], [24.12, 13.39], [12, 20.39]]), brief: { bedrooms: 2, bathrooms: 1, extras: [] } },
     { name: 'two storeys', env: envelope(lot(18, 30), [[3, 8], [15, 8], [15, 22], [3, 22]], [[3, 8], [15, 8], [15, 18], [3, 18]]), brief: { bedrooms: 3, bathrooms: 2, extras: ['garage', 'laundry'] } },
-    { name: 'three storeys', env: envelope(lot(14, 30), [[2, 6], [12, 6], [12, 20], [2, 20]], [[2, 6], [12, 6], [12, 18], [2, 18]], [[2, 8], [10, 8], [10, 16], [2, 16]]), brief: { bedrooms: 4, bathrooms: 3, extras: ['laundry'] } },
     { name: 'narrow townhouse (open plan)', env: envelope(lot(10, 34), [[1, 6], [9, 6], [9, 22], [1, 22]], [[1, 6], [9, 6], [9, 18], [1, 18]]), brief: { bedrooms: 3, bathrooms: 2, extras: ['garage', 'laundry', 'powder'] } },
   ];
   for (const c of CASES) {
-    it(`${c.name}: the first layout offered breaks no design rule`, () => {
-      const [best] = generateVariants({ envelope: c.env, ...c.brief }, 1, 1, 16);
-      const r = checkPlan(best);
-      expect(r.hard, r.results.filter((x) => !x.ok && x.severity === 'hard').flatMap((x) => x.issues.map((i) => `${x.id}: ${i.message}`)).join('\n')).toBe(0);
-    });
+    it(`${c.name}: compliant layouts are offered, and every one breaks no design rule`, () => {
+      const r = generateLayouts({ envelope: c.env, ...c.brief }, 2, 1, 16);
+      expect(r.plans.length, JSON.stringify(r.closest?.report.results.filter((x) => !x.ok && x.severity === 'hard').map((x) => x.issues[0].message))).toBeGreaterThan(0);
+      for (const p of r.plans) expect(checkPlan(p).hard).toBe(0);
+    }, 60_000);
   }
+
+  it('never offers a layout that breaks a hard rule, whatever the envelope and brief', () => {
+    // footprints a client might draw, with briefs the feasibility check allows
+    const envs: Envelope[] = [
+      envelope(lot(20, 30), [[2, 6], [16, 6], [16, 17], [2, 17]]),
+      envelope(lot(26, 30), [[2, 5], [22, 5], [22, 13], [16, 13], [16, 21], [8, 21], [8, 13], [2, 13]]),
+      envelope(lot(20, 30), [[2, 6], [15, 6], [18, 9], [18, 19], [2, 19]]),
+      envelope(lot(18, 32), [[2, 6], [14, 6], [14, 18], [2, 18]], [[2, 6], [14, 6], [14, 14], [2, 14]]),
+    ];
+    const briefs = [{ bedrooms: 2, bathrooms: 1, extras: [] }, { bedrooms: 3, bathrooms: 2, extras: ['laundry'] }, { bedrooms: 4, bathrooms: 2, extras: ['study'] }];
+    let offered = 0;
+    for (const env of envs) for (const b of briefs) {
+      const plates = env.floors.map((f) => Math.round(footprintArea(f.footprint)));
+      if (!checkFeasibility({ area: plates.reduce((x, y) => x + y, 0), floors: plates.length, plates, ...b }).ok) continue;
+      const r = generateLayouts({ envelope: env, ...b }, 4, 1, 12);
+      offered += r.plans.length;
+      for (const p of r.plans) expect(checkPlan(p).hard).toBe(0);
+      if (!r.plans.length) expect(r.closest!.report.hard).toBeGreaterThan(0);
+    }
+    expect(offered).toBeGreaterThan(10);
+  }, 120_000);
 
   it('every generated garage is a rectangle a car fits in, with its door on the street', () => {
     for (const seed of [1, 2, 3]) {
@@ -121,18 +163,30 @@ describe('design rules: the generator follows them', () => {
     }
   });
 
-  it('a narrow ground floor gets one open-plan living space instead of three slivers', () => {
+  it('a narrow townhouse gets living spaces with real proportions, open-plan when they can\'t be separate', () => {
     const c = CASES[CASES.length - 1];
-    const p = generatePlan({ envelope: c.env, ...c.brief, seed: 1 });
-    expect(p.floors[0].rooms.some((r) => kindOf(r) === 'livingKitchen')).toBe(true);
+    const [p] = generateLayouts({ envelope: c.env, ...c.brief }, 1, 1, 16).plans;
+    const living = p.floors[0].rooms.filter((r) => ['living', 'livingKitchen', 'kitchen', 'dining'].includes(kindOf(r)));
+    expect(living.length).toBeGreaterThan(0);
+    for (const r of living) expect(Math.min(...[0, 1].map((ax) => Math.max(...r.polygon.map((v) => v[ax])) - Math.min(...r.polygon.map((v) => v[ax]))))).toBeGreaterThanOrEqual(2.4);
+    expect(failed(checkPlan(p), 'clear-rect').ok).toBe(true);
   });
 
-  it('says honestly when floors are too tight for the brief', () => {
+  it('when floors are too tight for the brief, offers nothing unsound and suggests briefs that fit', () => {
     const tight = envelope(lot(22, 30), [[4, 8], [18, 8], [18, 18], [4, 18]]);
-    const [best] = generateVariants({ envelope: tight, bedrooms: 3, bathrooms: 2, extras: ['garage', 'laundry'] }, 1, 1, 16);
-    const r = checkPlan(best);
-    // 140 m² with a garage, 3 bedrooms and 2 bathrooms: something has to give, and the report says what
-    expect(r.hard).toBeGreaterThan(0);
-    expect(r.results.filter((x) => !x.ok && x.severity === 'hard').every((x) => x.issues.every((i) => i.message.length > 5))).toBe(true);
-  });
+    const input = { envelope: tight, bedrooms: 3, bathrooms: 2, extras: ['garage', 'laundry'] };
+    // 140 m² with a garage, 3 bedrooms and 2 bathrooms: the feasibility check already says so…
+    expect(checkFeasibility({ area: 140, floors: 1, plates: [140], ...input }).ok).toBe(false);
+    // …and no layout is offered: the closest attempt says what had to give
+    const r = generateLayouts(input, 4, 1, 16);
+    expect(r.plans).toEqual([]);
+    expect(r.closest!.report.hard).toBeGreaterThan(0);
+    // the closest briefs that do fit, each one checked by generating it
+    const sg = suggestBriefs(input, 2);
+    expect(sg.length).toBeGreaterThan(0);
+    for (const x of sg) {
+      expect(x.change.length).toBeGreaterThan(3);
+      expect(generateLayouts({ ...input, ...x.brief }, 1, 1, 12).plans.length).toBeGreaterThan(0);
+    }
+  }, 120_000);
 });

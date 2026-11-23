@@ -1,40 +1,57 @@
 <script lang="ts">
-  /** Last setup step (Template / Tell us): generated layouts inside the client's floors; pick one. */
+  /**
+   * Last setup step (Template / Tell us): generated layouts inside the client's floors; pick one.
+   * Only layouts that meet every hard design rule are offered (generator/rules.ts). When none can,
+   * the step says why and offers the closest briefs that do fit, each checked by generating it.
+   */
   import { onMount, untrack } from 'svelte';
   import type { PlanSpec } from '@shared/planspec/schema';
   import type { Editor } from '../workspace/editor.svelte';
-  import { generateVariants, envelopeOfPlan, applyLayout, type Brief } from '../generator/generator';
+  import { generateLayouts, suggestBriefs, envelopeOfPlan, applyLayout, type Brief, type Layouts, type BriefSuggestion } from '../generator/generator';
   import { describe, envelopeOf } from '../generator/feasibility';
-  import { checkPlan } from '../generator/rules';
   import PlanThumb from '../PlanThumb.svelte';
   import DesignCheck from '../DesignCheck.svelte';
 
-  let { editor, brief, onback, onopen }: { editor: Editor; brief: Brief & { style?: string; notes?: string }; onback: () => void; onopen: (p: PlanSpec) => void } = $props();
+  let { editor, brief, onback, onopen, onbrief }: {
+    editor: Editor;
+    brief: Brief & { style?: string; notes?: string };
+    onback: () => void;
+    onopen: (p: PlanSpec) => void;
+    /** switch to another brief (a suggestion that fits) */
+    onbrief?: (b: Brief) => void;
+  } = $props();
 
-  let variants = $state<PlanSpec[]>([]);
+  let result = $state<Layouts | null>(null);
   let chosen = $state(0);
   let busy = $state(true);
   let error = $state('');
   let batch = $state(0);
+  let suggestions = $state<BriefSuggestion[] | null>(null);
   const env = untrack(() => envelopeOf(editor.plan));
-  // every layout is judged against the design rules (generator/rules.ts)
-  const reports = $derived(variants.map((v) => checkPlan(v)));
-  const anyClean = $derived(reports.some((r) => r.hard === 0));
+  const variants = $derived(result?.plans ?? []);
+  const reports = $derived(result?.reports ?? []);
+  const blockers = $derived(result?.closest ? result.closest.report.results.filter((r) => r.severity === 'hard' && !r.ok) : []);
+
+  function input() {
+    const plan = $state.snapshot(editor.plan) as PlanSpec;
+    return { envelope: envelopeOfPlan(plan), ...brief, mode: plan.meta.mode, title: plan.meta.title };
+  }
 
   function run() {
     busy = true;
     error = '';
+    suggestions = null;
     // let the spinner paint before the (synchronous) generator runs
     setTimeout(() => {
       try {
-        const plan = $state.snapshot(editor.plan) as PlanSpec;
-        variants = generateVariants({ envelope: envelopeOfPlan(plan), ...brief, mode: plan.meta.mode, title: plan.meta.title }, 4, 1 + batch * 24, 16);
+        result = generateLayouts(input(), 4, 1 + batch * 32, 16);
         chosen = 0;
       } catch (e) {
         error = e instanceof Error ? e.message : 'No layout fits these floors.';
-        variants = [];
+        result = null;
       }
       busy = false;
+      if (result && !result.plans.length) setTimeout(() => { suggestions = suggestBriefs(input(), 3); }, 40);
     }, 40);
   }
   onMount(run);
@@ -52,7 +69,7 @@
     <div class="grid gap-1">
       <p class="eyebrow">Step 4 · Pick a layout</p>
       <h1 class="text-2xl md:text-3xl font-semibold tracking-tight">Layouts for {describe({ ...brief, floors: env.floors })}</h1>
-      <p class="text-ink-2">Every layout fills exactly the floors you drew ({env.area} m²): rooms, hallways and stairs are arranged inside them. Pick one to open in the editor, where you can change anything.</p>
+      <p class="text-ink-2">Every layout fills exactly the floors you drew ({env.area} m²) and meets every design rule: room shapes and sizes, sensible proportions, and rooms placed for privacy, security and convenience. Pick one to open in the editor, where you can change anything.</p>
     </div>
     {#if busy}
       <div class="card p-10 grid place-items-center text-muted" role="status">
@@ -64,14 +81,36 @@
         <p class="text-ink-2">{error}</p>
         <div class="flex gap-2"><button class="btn btn-soft btn-sm" onclick={onback}>← Change the brief</button></div>
       </div>
+    {:else if !variants.length}
+      <div class="card p-5 grid gap-3" role="status">
+        <p class="font-semibold text-lg">No sound layout for {describe({ ...brief, floors: env.floors })} fits these floors</p>
+        <p class="text-ink-2">We only offer layouts that meet every design rule, and none of the arrangements we tried could. The closest one still broke:</p>
+        <ul class="grid gap-1 text-sm">
+          {#each blockers.slice(0, 4) as r (r.id)}
+            <li><span class="font-medium">{r.title}</span><span class="text-muted"> · {r.issues[0]?.message}{r.issues.length > 1 ? ` (and ${r.issues.length - 1} more)` : ''}</span></li>
+          {/each}
+        </ul>
+        {#if suggestions === null}
+          <p class="text-sm text-muted flex items-center gap-2" role="status"><span class="w-4 h-4 rounded-full border-2 border-line border-t-accent animate-spin"></span> Looking for the closest brief that fits…</p>
+        {:else if suggestions.length}
+          <div class="grid gap-2">
+            <p class="font-semibold">These fit, with layouts that meet every rule:</p>
+            <div class="grid sm:grid-cols-3 gap-2">
+              {#each suggestions as sg}
+                <button class="card p-3 text-left grid gap-1 hover:border-ink" onclick={() => onbrief?.(sg.brief)} disabled={!onbrief}>
+                  <span class="font-semibold">{sg.label}</span>
+                  <span class="text-sm text-muted">{sg.change}</span>
+                </button>
+              {/each}
+            </div>
+          </div>
+        {:else}
+          <p class="text-ink-2">No smaller brief fits either: make the floors bigger or simpler (fewer narrow parts), or add a floor.</p>
+        {/if}
+        <p class="text-sm text-muted">Or change the floors: more area, or a simpler outline, gives the rooms room to work.</p>
+        <div class="flex gap-2 flex-wrap"><button class="btn btn-soft btn-sm" onclick={onback}>← Change the brief</button></div>
+      </div>
     {:else}
-      {#if !anyClean}
-        <div class="card p-4 grid gap-2 border-[color:var(--color-warn)]" role="status">
-          <p class="font-semibold text-warn">None of these layouts meets every design rule</p>
-          <p class="text-ink-2">These floors are tight for {describe({ ...brief, floors: env.floors })}: the rooms can't all get their minimum size, shape and position at once. Each layout below says what it breaks. Try <b>More options</b>, a smaller brief (fewer bedrooms or extras), or bigger or simpler floor shapes.</p>
-          <div class="flex gap-2 flex-wrap"><button class="btn btn-soft btn-sm" onclick={onback}>← Change the brief</button></div>
-        </div>
-      {/if}
       <div class="grid md:grid-cols-2 gap-4" role="radiogroup" aria-label="Layout variants">
         {#each variants as v, i}
           {@const rep = reports[i]}
@@ -79,9 +118,7 @@
             <PlanThumb plan={v} />
             <div class="px-1 text-sm flex justify-between gap-2"><span class="font-semibold">Layout {String.fromCharCode(65 + i)}</span><span class="text-muted">{v.floors.reduce((s, f) => s + f.rooms.filter((r) => r.type !== 'hallway' && r.type !== 'stairs').length, 0)} rooms</span></div>
             {#if rep}
-              <div class="px-1 text-xs font-semibold {rep.hard ? 'text-danger' : 'text-ok'}">
-                {rep.hard ? `⚠ ${rep.results.filter((r) => r.severity === 'hard' && !r.ok).length} design rule${rep.results.filter((r) => r.severity === 'hard' && !r.ok).length === 1 ? '' : 's'} not met` : '✓ All design rules met'}{rep.soft ? ` · ${rep.soft} suggestion${rep.soft === 1 ? '' : 's'}` : ''}
-              </div>
+              <div class="px-1 text-xs font-semibold text-ok">✓ All design rules met{rep.soft ? ` · ${rep.soft} suggestion${rep.soft === 1 ? '' : 's'}` : ''}</div>
             {/if}
           </button>
         {/each}
