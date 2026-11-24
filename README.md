@@ -177,19 +177,19 @@ A blank 1 m grid: tap the lot's corners. The side facing down the screen becomes
 
   | Room | Min m² | Max m² | Clear rectangle (m) | Shape |
   |---|---|---|---|---|
-  | Main bedroom | 12 | 30 | 3.0 × 3.4 | at most an L |
-  | Bedroom | 9 | 20 | 2.7 × 3.0 | at most an L |
-  | Bathroom / ensuite | 4 / 3.5 | 10 / 8.5 | 1.6 × 2.1 / 1.5 × 2.0 | rectangle |
-  | Toilet (powder room) | 1.4 | 4.5 | 0.9 × 1.4 | rectangle |
-  | Laundry | 3.5 | 9 | 1.5 × 1.8 | rectangle |
-  | Kitchen | 7 | 25 | 2.4 × 2.7 | at most an L |
-  | Living / living & kitchen | 14 / 20 | 55 / 70 | 3.3 × 3.6 | free |
-  | Family room | 11 | 40 | 3.0 × 3.3 | free |
-  | Dining | 8 | 25 | 2.7 × 3.0 | at most an L |
-  | Study | 6 | 18 | 2.4 × 2.4 | at most an L |
-  | Retreat | 7 | 30 | 2.7 × 2.7 | at most an L |
-  | Entry | 2.5 | 14 | 1.4 × 1.8 | rectangle |
-  | Walk-in robe / storeroom | 1.8 / 1.2 | 7 / 9 | 1.1 × 1.4 / 0.9 × 1.2 | rectangle |
+  | Main bedroom | 12 | 26 | 3.0 × 3.4 | at most an L |
+  | Bedroom | 9 | 17 | 2.7 × 3.0 | at most an L |
+  | Bathroom / ensuite | 4 / 3.5 | 8.5 / 7.5 | 1.6 × 2.1 / 1.5 × 2.0 | rectangle |
+  | Toilet (powder room) | 1.4 | 3.6 | 0.9 × 1.4 | rectangle |
+  | Laundry | 3.5 | 8 | 1.5 × 1.8 | rectangle |
+  | Kitchen | 7 | 20 | 2.4 × 2.7 | at most an L |
+  | Living / living & kitchen | 14 / 20 | 50 / 70 | 3.3 × 3.6 | free |
+  | Family room | 11 | 32 | 3.0 × 3.3 | free |
+  | Dining | 8 | 20 | 2.7 × 3.0 | at most an L |
+  | Study | 6 | 14 | 2.4 × 2.4 | at most an L |
+  | Retreat | 7 | 22 | 2.7 × 2.7 | at most an L |
+  | Entry | 2.5 | 9 | 1.4 × 1.8 | rectangle |
+  | Walk-in robe / storeroom | 1.8 / 1.2 | 6 / 7 | 1.1 × 1.4 / 0.9 × 1.2 | rectangle |
 
 * **How the rules were found: generate, judge, enforce.** A harness generated 12 seeded candidates on each of 14 test envelopes (rectangle, L, T, U, chamfered, trapezoid, narrow, turned 30°, two- and three-storey, a narrow townhouse; with and without garages) and ran the checker on all 168. Each round looked at the worst plans, named what was wrong, and changed the generator so it can't happen:
 
@@ -220,6 +220,25 @@ A blank 1 m grid: tap the lot's corners. The side facing down the screen becomes
   Feasibility was then calibrated to what the generator can actually do (above). **The contract now is: a layout that breaks a hard rule is never offered.** On the random bench, 40 of 68 briefs get compliant layouts straight away, 21 get compliant alternative briefs (e.g. “3 bed 2 bath + garage, study: without the laundry”), and 7, all on two or three storeys with awkward upper floors, get only the honest explanation; none is shown an unsound layout (`tests/rules.test.ts` asserts the contract on a set of envelopes and briefs, and that every demo plan meets every rule). Changes that made the numbers worse were reverted (splitting pockets by hallway side, treating every deep side as a wing, nearest-hallway claims, scoring the ground spine by the upper floors).
 
   A third round came from reviewing layouts by eye: a main bedroom with its ensuite and robe carved out of the middle (10 to 12 corners), a 104 m² empty hallway wing, rooms 8 to 14 m deep in the arms of a U or the leg of an L. Main bedrooms in offered layouts went from 20 rectangles / 55 L-shapes / 42 eight-cornered out of 117 to **75 rectangles and 43 simple L-shapes, none worse**; *Rooms are not corridors* and *Stairs line up on every level* became hard rules; the optimiser and the diverse top three were added. With the stricter rules, the fixed bench stands at 73 of 168 candidates compliant (10 of 14 envelopes), and on the random bench 46 of 68 briefs get compliant layouts directly (38 of them the full three).
+
+  A fourth and a fifth round (six generate → judge → fortify passes, on a 29-case bench plus 40 random feasible briefs, every offered plan rendered and read by an independent critic script) looked past "breaks no rule" at whether the plans are the right rooms at the right sizes:
+
+  | What was wrong | Enforced by |
+  |---|---|
+  | spare space dumped into rooms: a 37 m² kitchen, a 25 m² "study nook", four study nooks in a row | the programme (`program.ts`) first grows every room towards a **comfortable size** (`comfortOf`, all by the same factor so the hierarchy holds), then adds rooms a household uses (laundry, family room, study, dining, storage; upstairs a retreat, study, linen store), each only when the floor clearly has the space; such **spare rooms** (`spare`) are the first to go when a strip is crowded; tighter maximum sizes (table above) |
+  | rooms named for what they are not | a "nook" stays under about 9 m²; a large, lit spare room downstairs is a family or rumpus room; when the family room came out bigger than the living room the two swap names |
+  | the entry as a 10 to 14 m² room; no entry at all on a T | the entry is a vestibule (1.5 m wide) from the front door to the hallway; it may cut through a room across the end of the hallway, which keeps its larger part |
+  | one standard window whatever the room's size; windows in storerooms | glazing of at least 10 % of the floor area in lived-in rooms (`GLAZING`, soft rule *Windows are sized to the room*); none in storerooms and robes |
+  | two doorways in the same place between kitchen and dining | a doorway the other room already made counts |
+  | bedrooms wrapped round a bathroom or the stairs (U and Z shapes) | *Bedrooms are a rectangle or a simple L* (hard); a pocket never turns a bedroom into a U; a small wet room keeps its full depth (and gets a window) when what would be left behind it is too shallow to furnish |
+  | the same bedroom size for everyone | *The main bedroom is clearly the main bedroom* (soft, a tenth larger); the optimiser moves walls between bedrooms for it and to keep the other bedrooms within a third of each other |
+  | the way to the bedrooms through the living room; a bathroom door beside the front door | soft rules *Bedrooms and stairs are reached without crossing the living room* and *No bedroom or bathroom door beside the front door* |
+  | narrow limbs of rooms round the garage or stairs; internal bathrooms | soft rules *Rooms have no narrow leftover limbs* and *Bathrooms and laundries have a window*; stairs go against an outside wall or leave a room's depth behind them |
+  | a hallway position whose strips cannot hold the rooms (the main bedroom in a 2.75 m strip, five bedrooms on 19 m of frontage beside a double garage) | each candidate measures the **strain** of its strips (frontage short, rooms too deep, floor no hallway serves) and, when there is any, tries the next hallway positions and a single garage instead of a double, keeping the one that fits best |
+  | a whole wing swallowed by the garage (walls missing round unassigned floor) | nothing inside the walls is left unassigned: a part no room could take becomes a room of its own, a scrap joins the hallway |
+  | three "different" layouts that were mirror images | the next pick must also differ from the mirror images (left-right and front-back) of those already picked; a mirror image is offered only when nothing else is left |
+
+  On the 29-case bench the critic's findings per offered plan fell from 7.6 to 3.7 and the cases left without a layout from 5 to 3; on the random bench the findings fell from 10.6 to 5.1 (the same critic on both; it is a heuristic, so read the figures as a direction). The stricter rules also refuse more: on the random bench 31 of 40 briefs get layouts, against 33 before, the difference being houses far larger than their brief, where the old rules let a 21 m² internal study or a 6 m² powder room through. Still without a layout on the fixed bench: a U with a garage in one arm and a 7 × 14 m two-storey townhouse (the hallway widens into a room). Generation is slower where candidates have to try several hallway positions (about 2.5 s per brief on average; the worst case on the bench, the U with a garage, takes far longer and still finds nothing).
 
 
 * **Tell us (chat)**: the envelope is already drawn, so the chat only needs **bedrooms and bathrooms**; it also picks up extra rooms (study, garage, laundry, dining, family room, powder room) and relationships (*main bedroom downstairs*, *living facing the back garden*). If the client mentions a size or number of floors that differs from the footprints, the assistant points out that the footprints set them. `FallbackProvider` tries the `WorkerProvider` (15 s timeout) and falls back to the `RuleBasedProvider` (regex/keywords, understands short answers like “2”) when the URL is unset, on errors, on HTTP 429 or on invalid output; fallback shows the badge “Offline mode – simplified parsing”. Parsed requirements appear as editable chips.
