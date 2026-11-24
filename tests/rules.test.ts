@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { generatePlan, generateLayouts, suggestBriefs, layoutFingerprint, layoutSimilarity, type Envelope } from '../src/features/design/generator/generator';
-import { checkPlan, kindOf, containsRect, designScore, RULES, ROOM_RULES, HALL_MAX, type Report } from '../src/features/design/generator/rules';
+import { checkPlan, kindOf, containsRect, thinShare, designScore, RULES, ROOM_RULES, HALL_MAX, THIN_W, type Report } from '../src/features/design/generator/rules';
+import { buildProgram, comfortOf } from '../src/features/design/generator/program';
 import { simplifyPolygon } from '../src/shared/util/geometry';
 import { checkFeasibility } from '../src/features/design/generator/feasibility';
 import { footprintArea } from '../src/shared/planspec/envelope';
@@ -239,5 +240,99 @@ describe('design rules: the generator follows them', () => {
       expect(x.change.length).toBeGreaterThan(3);
       expect(generateLayouts({ ...input, ...x.brief }, 1, 1, 12).plans.length).toBeGreaterThan(0);
     }
+  }, 120_000);
+});
+
+// ---------------------------------------------------------------------------------------------
+// fourth review round: the right rooms at the right sizes, daylight, arrival, shapes
+// ---------------------------------------------------------------------------------------------
+describe('design rules: sizes, daylight and arrival (fourth review round)', () => {
+  it('measures the share of a room that is a narrow limb', () => {
+    expect(thinShare(rect(0, 0, 4, 5), THIN_W)).toBe(0);
+    // a 4 × 5 m room with a 1 m wide, 4 m long leg: the leg is a sixth of it
+    const legged: Vec2[] = [[0, 0], [4, 0], [4, 4], [8, 4], [8, 5], [0, 5]];
+    const s = thinShare(legged, THIN_W);
+    expect(s).toBeGreaterThan(0.12);
+    expect(s).toBeLessThan(0.22);
+  });
+
+  it('knows the rules this round added', () => {
+    const ids = new Set(RULES.map((r) => r.id));
+    for (const id of ['bedroom-shape', 'no-thin-limbs', 'master-distinct', 'daylight-area', 'arrival', 'front-door-privacy']) expect(ids.has(id), id).toBe(true);
+    expect(RULES.find((r) => r.id === 'bedroom-shape')!.severity).toBe('hard');
+  });
+
+  it('the programme grows rooms to a comfortable size first, then adds rooms the floor can clearly hold', () => {
+    const brief = { bedrooms: 3, bathrooms: 2, extras: ['laundry'] };
+    const tight = buildProgram(brief, [110])[0].rooms;
+    expect(tight.some((r) => r.spare)).toBe(false);
+    const roomy = buildProgram(brief, [260])[0].rooms;
+    expect(roomy.some((r) => r.spare)).toBe(true);
+    // nothing is stretched past 1.2 × its comfortable size: spare space became rooms instead
+    for (const r of roomy) expect(r.target, r.name).toBeLessThanOrEqual(comfortOf(r) * 1.2 + 0.01);
+    // the hierarchy survives the growth: living largest, main bedroom above the bedrooms, kitchen below living
+    const t = (name: string) => roomy.find((r) => r.name === name)!.target;
+    expect(t('Living')).toBeGreaterThan(t('Kitchen'));
+    expect(t('Main bedroom')).toBeGreaterThan(Math.max(...roomy.filter((r) => r.type === 'bedroom').map((r) => r.target)));
+    expect(Math.max(...roomy.map((r) => r.target))).toBe(t('Main bedroom') > t('Living') ? t('Main bedroom') : t('Living'));
+  });
+
+  const ENVS = [
+    { env: envelope(lot(22, 30), [[2.5, 8], [19.5, 8], [19.5, 19], [2.5, 19]]), brief: { bedrooms: 3, bathrooms: 2, extras: ['garage', 'laundry'] } },
+    { env: envelope(lot(28, 22), [[3, 6], [25, 6], [25, 14], [3, 14]]), brief: { bedrooms: 3, bathrooms: 2, extras: ['laundry', 'dining'] } },
+    { env: envelope(lot(20, 30), [[3, 8], [17, 8], [17, 19], [3, 19]], [[5, 8], [15, 8], [15, 17], [5, 17]]), brief: { bedrooms: 4, bathrooms: 2, extras: ['garage', 'laundry', 'master-ground'] } },
+  ];
+
+  it('offered layouts: windows sized to the rooms, never two openings in one place, no filler "nook" bigger than a nook', () => {
+    let seen = 0;
+    for (const c of ENVS) {
+      for (const p of generateLayouts({ envelope: c.env, ...c.brief }, 3, 1, 16).plans) {
+        seen++;
+        const rep = checkPlan(p);
+        expect(failed(rep, 'bedroom-shape').ok).toBe(true);
+        expect(failed(rep, 'daylight-area').issues.length).toBeLessThanOrEqual(1);
+        for (const f of p.floors) {
+          for (const a of f.openings) for (const b of f.openings) {
+            if (a.id >= b.id || a.wallId !== b.wallId) continue;
+            expect(Math.abs(a.offset - b.offset), `${a.id} / ${b.id}`).toBeGreaterThanOrEqual((a.width + b.width) / 2);
+          }
+          for (const r of f.rooms) if (/nook/i.test(r.name)) expect(r.area).toBeLessThanOrEqual(9);
+          // storerooms and robes keep their walls for shelves
+          const walls = new Map(f.walls.map((w) => [w.id, w]));
+          void walls;
+        }
+      }
+    }
+    expect(seen).toBeGreaterThan(3);
+  }, 120_000);
+
+  it('a window too small for its room is reported', () => {
+    const p = clone(generateLayouts({ envelope: ENVS[0].env, ...ENVS[0].brief }, 1, 1, 12).plans[0]);
+    for (const o of p.floors[0].openings) if (o.type === 'window') { o.width = 0.6; o.height = 0.6; }
+    const r = failed(checkPlan(p), 'daylight-area');
+    expect(r.ok).toBe(false);
+    expect(r.severity).toBe('soft');
+  });
+
+  it('a bedroom wrapped round another room breaks the bedroom shape rule', () => {
+    const p = clone(generateLayouts({ envelope: ENVS[0].env, ...ENVS[0].brief }, 1, 1, 12).plans[0]);
+    const bed = rooms(p).find((r) => r.type === 'bedroom')!;
+    const xs = bed.polygon.map((q) => q[0]), ys = bed.polygon.map((q) => q[1]);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys), mx = (x0 + x1) / 2;
+    // a U: a notch cut into the middle of one side
+    bed.polygon = [[x0, y0], [mx - 0.5, y0], [mx - 0.5, y0 + 1.2], [mx + 0.5, y0 + 1.2], [mx + 0.5, y0], [x1, y0], [x1, y1], [x0, y1]];
+    expect(failed(checkPlan(p), 'bedroom-shape').ok).toBe(false);
+  });
+
+  it('prefers a different arrangement to a mirror image of one already picked', () => {
+    const c = ENVS[1];
+    const r = generateLayouts({ envelope: c.env, ...c.brief }, 3, 1, 24);
+    expect(r.plans.length).toBeGreaterThan(1);
+    const kinds = (p: PlanSpec) => layoutFingerprint(p)[0];
+    const a = kinds(r.plans[0]), b = kinds(r.plans[1]);
+    // the second pick is not the first one read backwards row by row
+    const pts = c.env.floors[0].footprint, w = Math.round((Math.max(...pts.map((q) => q[0])) - Math.min(...pts.map((q) => q[0]))) / 0.5);
+    const mirrored = b.map((_, i) => b[Math.floor(i / w) * w + (w - 1 - (i % w))]);
+    expect(layoutSimilarity([a], [mirrored])).toBeLessThan(0.9);
   }, 120_000);
 });

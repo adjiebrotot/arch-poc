@@ -143,7 +143,7 @@ export function floorShortfall(p: ProgramInput): { index: number; need: number }
     let net = 0;
     for (const r of progs[i].rooms) {
       // rooms the programme only adds to fill spare space don't count
-      if (r.name === 'Storage' || r.name === 'Retreat' || r.name === 'Sitting room') continue;
+      if (r.spare || r.name === 'Storage' || r.name === 'Retreat' || r.name === 'Sitting room') continue;
       if (r.name === 'Family room' && !p.extras.includes('family')) continue;
       if (r.type === 'study' && !p.extras.includes('study')) continue;
       net += r.type === 'garage' ? FEASIBILITY.minArea.garage : (ROOM_RULES[kindOf(r)]?.min ?? 0) + (r.suite ? FEASIBILITY.minArea.ensuite + FEASIBILITY.minArea.robe : 0);

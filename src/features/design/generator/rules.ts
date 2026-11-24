@@ -45,9 +45,9 @@ export type Kind = 'garage' | 'entry' | 'living' | 'livingKitchen' | 'family' | 
 export function kindOf(r: Pick<Room, 'type' | 'name'>): Kind {
   const n = r.name.toLowerCase();
   switch (r.type) {
-    case 'living': return /kitchen/.test(n) ? 'livingKitchen' : /family|rumpus|sitting/.test(n) ? 'family' : 'living';
+    case 'living': return /kitchen/.test(n) ? 'livingKitchen' : /family|rumpus|sitting|games|media/.test(n) ? 'family' : 'living';
     case 'hallway': return 'hall';
-    case 'other': return /robe/.test(n) ? 'robe' : /storage|store|linen/.test(n) ? 'storage' : /retreat|sitting/.test(n) ? 'retreat' : /open space/.test(n) ? 'open' : 'other';
+    case 'other': return /robe/.test(n) ? 'robe' : /storage|store|linen/.test(n) ? 'storage' : /retreat|sitting|lounge/.test(n) ? 'retreat' : /open space/.test(n) ? 'open' : 'other';
     default: return r.type as Kind;
   }
 }
@@ -61,25 +61,27 @@ const WET: Kind[] = ['bathroom', 'ensuite', 'laundry', 'wc', 'kitchen', 'livingK
  * `rect` must be a rectangle, `simple` at most an L (6 corners), `free` up to 8 corners.
  */
 export const ROOM_RULES: Partial<Record<Kind, { min: number; max: number; clear: [number, number]; aspect: number; shape: 'rect' | 'simple' | 'free' }>> = {
-  master: { min: 12, max: 30, clear: [3.0, 3.4], aspect: 1.9, shape: 'simple' },
-  bedroom: { min: 9, max: 20, clear: [2.7, 3.0], aspect: 1.9, shape: 'simple' },
-  bathroom: { min: 4, max: 10, clear: [1.6, 2.1], aspect: 2.6, shape: 'rect' },
-  ensuite: { min: 3.5, max: 8.5, clear: [1.5, 2.0], aspect: 2.6, shape: 'rect' },
-  wc: { min: 1.4, max: 4.5, clear: [0.9, 1.4], aspect: 3.2, shape: 'rect' },
-  laundry: { min: 3.5, max: 9, clear: [1.5, 1.8], aspect: 3, shape: 'rect' },
-  kitchen: { min: 7, max: 25, clear: [2.4, 2.7], aspect: 2.6, shape: 'simple' },
-  living: { min: 14, max: 55, clear: [3.3, 3.6], aspect: 2.4, shape: 'free' },
+  master: { min: 12, max: 26, clear: [3.0, 3.4], aspect: 1.9, shape: 'simple' },
+  bedroom: { min: 9, max: 17, clear: [2.7, 3.0], aspect: 1.9, shape: 'simple' },
+  bathroom: { min: 4, max: 8.5, clear: [1.6, 2.1], aspect: 2.6, shape: 'rect' },
+  ensuite: { min: 3.5, max: 7.5, clear: [1.5, 2.0], aspect: 2.6, shape: 'rect' },
+  wc: { min: 1.4, max: 3.6, clear: [0.9, 1.4], aspect: 3.2, shape: 'rect' },
+  laundry: { min: 3.5, max: 8, clear: [1.5, 1.8], aspect: 3, shape: 'rect' },
+  kitchen: { min: 7, max: 20, clear: [2.4, 2.7], aspect: 2.6, shape: 'simple' },
+  living: { min: 14, max: 50, clear: [3.3, 3.6], aspect: 2.4, shape: 'free' },
   livingKitchen: { min: 20, max: 70, clear: [3.3, 3.6], aspect: 2.6, shape: 'free' },
-  family: { min: 11, max: 40, clear: [3.0, 3.3], aspect: 2.4, shape: 'free' },
-  dining: { min: 8, max: 25, clear: [2.7, 3.0], aspect: 2.2, shape: 'simple' },
-  study: { min: 6, max: 18, clear: [2.4, 2.4], aspect: 2.2, shape: 'simple' },
-  retreat: { min: 7, max: 30, clear: [2.7, 2.7], aspect: 2.4, shape: 'simple' },
-  entry: { min: 2.5, max: 14, clear: [1.4, 1.8], aspect: 4.5, shape: 'rect' },
-  robe: { min: 1.8, max: 7, clear: [1.1, 1.4], aspect: 3.2, shape: 'rect' },
-  storage: { min: 1.2, max: 9, clear: [0.9, 1.2], aspect: 4, shape: 'rect' },
+  family: { min: 11, max: 32, clear: [3.0, 3.3], aspect: 2.4, shape: 'free' },
+  dining: { min: 8, max: 20, clear: [2.7, 3.0], aspect: 2.2, shape: 'simple' },
+  study: { min: 6, max: 14, clear: [2.4, 2.4], aspect: 2.2, shape: 'simple' },
+  retreat: { min: 7, max: 22, clear: [2.7, 2.7], aspect: 2.4, shape: 'simple' },
+  entry: { min: 2.5, max: 9, clear: [1.4, 1.8], aspect: 4.5, shape: 'rect' },
+  robe: { min: 1.8, max: 6, clear: [1.1, 1.4], aspect: 3.2, shape: 'rect' },
+  storage: { min: 1.2, max: 7, clear: [0.9, 1.2], aspect: 4, shape: 'rect' },
 };
 /** A garage must take a car: centre-line size of a single (3.25 × 6 m) and a double (5.75 × 6 m) garage. */
 export const GARAGE = { single: [3.25, 6.0] as [number, number], double: [5.75, 6.0] as [number, number], doorSingle: 2.4, doorDouble: 4.8, maxArea: 42 };
+/** Glazing (window width × height) a lived-in room should have, as a share of its floor area. */
+export const GLAZING = 0.1;
 /** Every door opens onto a clear square this big on both sides. */
 export const DOOR_CLEAR = 0.8;
 /** Widest a hallway may be anywhere (m), and how far over its maximum a room may grow. */
@@ -120,6 +122,45 @@ export function containsRect(local: Vec2[], a: number, b: number, cell = 0.125):
     return false;
   };
   return fits(a, b) || fits(b, a);
+}
+
+/** Narrower than this (m), a part of a room is a leftover limb, not living space. */
+export const THIN_W = 2.0;
+
+/**
+ * Share (0–1) of a room's area lying in parts narrower than `w`: the cells (local frame) that no
+ * w × w square inside the room covers.
+ */
+export function thinShare(local: Vec2[], w: number, cell = 0.25): number {
+  const xs = local.map((p) => p[0]), ys = local.map((p) => p[1]);
+  const x0 = Math.min(...xs), y0 = Math.min(...ys);
+  const nx = Math.ceil((Math.max(...xs) - x0) / cell - 1e-6), ny = Math.ceil((Math.max(...ys) - y0) / cell - 1e-6);
+  if (nx <= 0 || ny <= 0) return 0;
+  const W = nx + 1;
+  const P = new Int32Array(W * (ny + 1));
+  const inside = new Uint8Array(nx * ny);
+  let total = 0;
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const v = pointInPolygon([x0 + (i + 0.5) * cell, y0 + (j + 0.5) * cell], local) ? 1 : 0;
+    inside[j * nx + i] = v; total += v;
+    P[(j + 1) * W + i + 1] = v + P[j * W + i + 1] + P[(j + 1) * W + i] - P[j * W + i];
+  }
+  if (!total) return 0;
+  const c = Math.max(1, Math.round(w / cell));
+  // difference array of the cells covered by a full c × c square
+  const D = new Int32Array((nx + 1) * (ny + 1));
+  for (let j = 0; j + c <= ny; j++) for (let i = 0; i + c <= nx; i++) {
+    if (P[(j + c) * W + i + c] - P[j * W + i + c] - P[(j + c) * W + i] + P[j * W + i] !== c * c) continue;
+    D[j * (nx + 1) + i]++; D[j * (nx + 1) + i + c]--; D[(j + c) * (nx + 1) + i]--; D[(j + c) * (nx + 1) + i + c]++;
+  }
+  let covered = 0;
+  const row = new Int32Array(nx + 1);
+  for (let j = 0; j < ny; j++) {
+    let run = 0;
+    for (let i = 0; i < nx; i++) { row[i] += D[j * (nx + 1) + i]; run += row[i]; if (run > 0 && inside[j * nx + i]) covered++; }
+    row[nx] += D[j * (nx + 1) + nx];
+  }
+  return 1 - covered / total;
 }
 
 /** Length of wall the two rooms share. */
@@ -250,6 +291,11 @@ export const RULES: Rule[] = [
     check: (a) => a.rooms.filter((r) => r.kind !== 'hall' && r.kind !== 'open' && r.kind !== 'stairs').flatMap((r) => (r.corners > 8 ? [at(r, `${r.corners} corners`)] : [])),
   },
   {
+    id: 'bedroom-shape', kind: 'shape', severity: 'hard', title: 'Bedrooms are a rectangle or a simple L',
+    why: 'A bed, wardrobes and a way round them need plain walls: a bedroom wrapped round a bathroom or the stairs (a U or a Z, more than 6 corners; one more where a slanted outside wall cuts it) is leftover space with a bed in it.',
+    check: (a) => a.rooms.filter((r) => r.kind === 'master' || r.kind === 'bedroom').flatMap((r) => (r.corners > (r.slanted ? 7 : 6) ? [at(r, `${r.corners} corners`)] : [])),
+  },
+  {
     id: 'hall-corridor', kind: 'shape', severity: 'hard', title: 'Hallways are corridors, not rooms',
     why: `A hallway wider than ${HALL_MAX} m anywhere is space nobody lives in: it should be a room, or part of one.`,
     check: (a) => a.rooms.filter((r) => r.kind === 'hall').flatMap((r) => (containsRect(r.local, HALL_MAX + 0.01, HALL_MAX + 0.01) ? [at(r, `is wider than ${HALL_MAX} m in places`)] : [])),
@@ -272,6 +318,14 @@ export const RULES: Rule[] = [
       if (!rule) return [];
       const ratio = Math.max(r.bboxW, r.bboxH) / Math.max(0.1, Math.min(r.bboxW, r.bboxH));
       return ratio > rule.aspect ? [at(r, `${fmt(ratio)} : 1`, (ratio - rule.aspect) * 6)] : [];
+    }),
+  },
+  {
+    id: 'no-thin-limbs', kind: 'shape', severity: 'soft', title: 'Rooms have no narrow leftover limbs',
+    why: `A part of a room narrower than ${THIN_W} m (a leg wrapped round the garage or the stairs, a strip behind a bathroom) can't be furnished or lived in: it is corridor the room has to pay for.`,
+    check: (a) => a.rooms.filter((r) => !['hall', 'stairs', 'open', 'garage', 'entry', 'robe', 'storage', 'wc', 'ensuite', 'bathroom', 'laundry'].includes(r.kind) && r.corners > 4).flatMap((r) => {
+      const share = thinShare(r.local, THIN_W);
+      return share > 0.12 ? [at(r, `${Math.round(share * 100)} % of it is narrower than ${THIN_W} m`, 2 + share * 25)] : [];
     }),
   },
   {
@@ -322,7 +376,7 @@ export const RULES: Rule[] = [
     check: (a, plan) => plan.floors.flatMap((f) => {
       const rs = a.rooms.filter((r) => r.level === f.level);
       const total = rs.reduce((s, r) => s + r.room.area, 0), hall = rs.filter((r) => r.kind === 'hall').reduce((s, r) => s + r.room.area, 0);
-      return total && hall / total > 0.17 ? [{ message: `${floorLabel(f.level)}: hallways are ${Math.round((hall / total) * 100)} % of the floor`, level: f.level, weight: (hall / total - 0.17) * 80 }] : [];
+      return total && hall / total > 0.15 ? [{ message: `${floorLabel(f.level)}: hallways are ${Math.round((hall / total) * 100)} % of the floor`, level: f.level, weight: 1 + (hall / total - 0.15) * 150 }] : [];
     }),
   },
 
@@ -334,6 +388,15 @@ export const RULES: Rule[] = [
       const m = a.rooms.find((r) => r.kind === 'master');
       if (!m) return [];
       return a.rooms.filter((r) => r.kind === 'bedroom' && r.room.area > m.room.area + 0.3).map((r) => at(r, `${fmt(r.room.area)} m² is bigger than the main bedroom (${fmt(m.room.area)} m²)`));
+    },
+  },
+  {
+    id: 'master-distinct', kind: 'proportion', severity: 'soft', title: 'The main bedroom is clearly the main bedroom',
+    why: 'It holds the largest bed and two people: at least a tenth bigger than any other bedroom, not the same room with a different name.',
+    check: (a) => {
+      const m = a.rooms.find((r) => r.kind === 'master');
+      const big = Math.max(0, ...a.rooms.filter((r) => r.kind === 'bedroom').map((r) => r.room.area));
+      return m && big > 0 && m.room.area < big * 1.1 ? [at(m, `${fmt(m.room.area)} m² against a ${fmt(big)} m² bedroom`, 3 + Math.min(4, (big * 1.1 - m.room.area)))] : [];
     },
   },
   {
@@ -370,7 +433,11 @@ export const RULES: Rule[] = [
       const living = a.rooms.filter((r) => r.kind === 'living' || r.kind === 'livingKitchen');
       if (!living.length) return [];
       const L = Math.max(...living.map((r) => r.room.area));
-      return a.rooms.flatMap((r) => ((r.kind === 'master' || r.kind === 'bedroom') && r.room.area > L) || (r.kind === 'kitchen' && r.room.area > L * 1.05) ? [at(r, `${fmt(r.room.area)} m² beats the living room (${fmt(L)} m²)`, 8)] : []);
+      // nothing on the living room's own floor outranks it, and no bedroom anywhere does
+      const lv = Math.min(...living.map((r) => r.level));
+      const rivals: Kind[] = ['kitchen', 'dining', 'study', 'family', 'retreat', 'laundry'];
+      return a.rooms.flatMap((r) => ((r.kind === 'master' || r.kind === 'bedroom') && r.room.area > L) || (rivals.includes(r.kind) && r.level === lv && r.room.area > L * 1.02)
+        ? [at(r, `${fmt(r.room.area)} m² beats the living room (${fmt(L)} m²)`, 8 + Math.min(12, (r.room.area / L - 1) * 20))] : []);
     },
   },
 
@@ -459,6 +526,51 @@ export const RULES: Rule[] = [
     id: 'quiet-bedrooms', kind: 'placement', severity: 'soft', title: 'The main bedroom is on the quiet side',
     why: 'Security, privacy and noise: on the ground floor the main bedroom should not face the street.',
     check: (a) => a.rooms.filter((r) => r.kind === 'master' && r.level === 0).flatMap((r) => (a.windows.filter((w) => w.room === r).some((w) => facesStreet(a, w, r)) ? [at(r, 'faces the street', 6)] : [])),
+  },
+  {
+    id: 'daylight-area', kind: 'placement', severity: 'soft', title: 'Windows are sized to the room',
+    why: `Daylight and ventilation: the glazing of a room people live or sleep in should be at least ${Math.round(GLAZING * 100)} % of its floor area, so a big room needs more than one standard window.`,
+    check: (a) => a.rooms.filter((r) => HABITABLE.includes(r.kind)).flatMap((r) => {
+      const ws = a.windows.filter((w) => w.room === r);
+      if (!ws.length) return []; // no window at all is the daylight rules' business
+      const glass = ws.reduce((s, w) => s + w.o.width * w.o.height, 0);
+      return glass < r.room.area * GLAZING - 0.05 ? [at(r, `${fmt(glass)} m² of glazing for ${fmt(r.room.area)} m² of floor`, 2 + (1 - glass / (r.room.area * GLAZING)) * 6)] : [];
+    }),
+  },
+  {
+    id: 'wet-ventilation', kind: 'placement', severity: 'soft', title: 'Bathrooms and laundries have a window',
+    why: 'Steam and damp: a bathroom, ensuite or laundry on an outside wall airs itself; an internal one depends on a fan and a duct for its whole life.',
+    check: (a) => a.rooms.filter((r) => ['bathroom', 'ensuite', 'laundry'].includes(r.kind)).flatMap((r) => (a.windows.some((w) => w.room === r) ? [] : [at(r, 'has no window (it needs mechanical ventilation)', 1.5)])),
+  },
+  {
+    id: 'arrival', kind: 'placement', severity: 'soft', title: 'Bedrooms and stairs are reached without crossing the living room',
+    why: 'Privacy and security: from the front door, the way to the bedrooms, bathrooms and stairs runs through the entry and hallways; a guest in the living room doesn\'t see everyone going to bed, and nobody carries shopping across the sofa.',
+    check: (a) => {
+      const fd = a.doors.find((d) => d.exterior && d.level === 0 && d.o.width < 2 && !d.rooms.some((r) => r.kind === 'garage'));
+      if (!fd || !fd.rooms.length) return [];
+      const quiet: Kind[] = ['hall', 'entry', 'stairs', 'open'];
+      const seen = new Set<RoomInfo>(fd.rooms);
+      const q = [...fd.rooms];
+      while (q.length) {
+        const r = q.shift()!;
+        if (!quiet.includes(r.kind)) continue;
+        for (const n of [...doorsOf(a, r).flatMap((d) => others(d, r)), ...(r.kind === 'stairs' ? a.rooms.filter((x) => x.kind === 'stairs' && x !== r) : [])]) if (!seen.has(n)) { seen.add(n); q.push(n); }
+      }
+      const cut = a.rooms.filter((r) => ['master', 'bedroom', 'bathroom'].includes(r.kind) || (r.kind === 'stairs' && r.level === 0)).filter((r) => !seen.has(r));
+      if (!cut.length) return [];
+      const through = quiet.includes(fd.rooms[0].kind) ? 'a living space' : fd.rooms[0].room.name.toLowerCase();
+      return [{ message: `${cut.slice(0, 3).map((r) => r.room.name).join(', ')}${cut.length > 3 ? '…' : ''}: reached only through ${through}`, roomId: cut[0].room.id, level: cut[0].level, weight: 4 + Math.min(4, cut.length) }];
+    },
+  },
+  {
+    id: 'front-door-privacy', kind: 'placement', severity: 'soft', title: 'No bedroom or bathroom door beside the front door',
+    why: 'Privacy and security: whoever stands at the open front door should not look straight into a bathroom or a bedroom; their doors are at least 2 m away from it.',
+    check: (a) => {
+      const fd = a.doors.find((d) => d.exterior && d.level === 0 && d.o.width < 2 && !d.rooms.some((r) => r.kind === 'garage'));
+      if (!fd) return [];
+      return a.doors.filter((d) => !d.exterior && d.level === 0 && dist(d.c, fd.c) < 2 && d.rooms.some((r) => fd.rooms.includes(r)))
+        .flatMap((d) => d.rooms.filter((r) => ['bathroom', 'wc', 'master', 'bedroom'].includes(r.kind)).map((r) => at(r, `its door is ${fmt(dist(d.c, fd.c))} m from the front door`, 4)));
+    },
   },
   {
     id: 'wet-cluster', kind: 'placement', severity: 'soft', title: 'Wet rooms are grouped',

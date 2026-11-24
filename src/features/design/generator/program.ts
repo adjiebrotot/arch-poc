@@ -28,6 +28,8 @@ export interface RoomSpec {
   suite?: boolean;
   /** small rooms keep only the depth they need; the rest goes to a neighbour */
   compact?: boolean;
+  /** not asked for in the brief: added because the floor has space to spare */
+  spare?: boolean;
 }
 
 export interface FloorProgram { rooms: RoomSpec[] }
@@ -39,7 +41,7 @@ const R = {
   kitchen: { type: 'kitchen', name: 'Kitchen', target: 10, minW: 2.4, zone: 0 },
   dining: { type: 'dining', name: 'Dining', target: 11, minW: 2.7, zone: 0 },
   family: { type: 'living', name: 'Family room', target: 14, minW: 3.2, zone: 0 },
-  entry: { type: 'entry', name: 'Entry', target: 5, minW: 1.6, zone: 0 },
+  entry: { type: 'entry', name: 'Entry', target: 5, minW: 1.5, zone: 0 },
   garage: { type: 'garage', name: 'Garage', target: 20, minW: 3.2, zone: 0 },
   study: { type: 'study', name: 'Study', target: 9, minW: 2.4, zone: 1 },
   laundry: { type: 'laundry', name: 'Laundry', target: 5, minW: 1.6, zone: 1, compact: true },
@@ -82,7 +84,8 @@ export function buildProgram(brief: Brief, inner: number[]): FloorProgram[] {
   const pub: RoomSpec[] = [];
   const openPlan = has('open-plan');
   const separateDining = has('dining') || (multi && !openPlan);
-  if (has('garage')) pub.push(mk('garage'));
+  // (the garage is a fixed rectangle: a double one on large floors)
+  if (has('garage')) pub.push(mk('garage', { target: inner[0] >= 260 ? 34.5 : inner[0] >= 170 ? 28 : 20 }));
   if (gross >= 110 || multi) pub.push(mk('entry'));
   if (openPlan) pub.push(mk(separateDining ? 'livingKitchen' : 'livingKitchenDining'));
   else pub.push(mk('living'), mk('kitchen'));
@@ -102,7 +105,7 @@ export function buildProgram(brief: Brief, inner: number[]): FloorProgram[] {
     for (let i = 0; i < shared; i++) priv.push(mk('bathroom'));
     if (has('powder')) service.push(mk('powder'));
     priv.push(...bedrooms, master);
-    return [{ rooms: fill([...pub, ...service, ...priv], caps[0], 0) }];
+    return [{ rooms: fill([...pub, ...service, ...priv], caps[0], 0, beds) }];
   }
 
   // ---- several floors: bedrooms go up, by available space ----
@@ -139,22 +142,76 @@ export function buildProgram(brief: Brief, inner: number[]): FloorProgram[] {
 
   return floors.map((rs, f) => {
     if (!rs.length) rs.push(mk('retreat', { name: f === 1 ? 'Retreat' : 'Sitting room' }));
-    return { rooms: fill(rs, caps[f], f) };
+    return { rooms: fill(rs, caps[f], f, beds) };
   });
 }
 
-/** Spare space becomes extra rooms; a cramped floor keeps its rooms (they are scaled down later). */
-function fill(rs: RoomSpec[], cap: number, level: number): RoomSpec[] {
+/**
+ * The comfortable size (m²) a room grows to when the floor is bigger than the brief needs. Past
+ * it, spare space is better spent on another room than on a 37 m² kitchen or a 23 m² bedroom.
+ */
+export function comfortOf(r: Pick<RoomSpec, 'type' | 'name' | 'suite' | 'target'>): number {
+  switch (r.type) {
+    case 'living': return /dining/i.test(r.name) ? 52 : /kitchen/i.test(r.name) ? 44 : /family|rumpus/i.test(r.name) ? 22 : 30;
+    case 'kitchen': return 15;
+    case 'dining': return 15;
+    case 'entry': return 6;
+    case 'study': return 12;
+    case 'laundry': return 6.5;
+    case 'wc': return 3;
+    case 'bathroom': return 7;
+    case 'master': return 17.5 + (r.suite ? 6.5 + 4.5 : 0);
+    case 'bedroom': return 13.5;
+    case 'other': return /storage/i.test(r.name) ? 5 : 16;
+    default: return r.target; // the garage is a fixed, car-sized rectangle
+  }
+}
+
+/**
+ * A floor bigger than its rooms need: first every room grows towards its comfortable size (all
+ * by the same factor, so the hierarchy between rooms is kept), then spare space becomes rooms a
+ * household actually uses, in order of usefulness (a laundry, a family room, a study, a powder
+ * room, storage; upstairs a retreat, a study, linen storage), and only then do rooms stretch a
+ * little past comfortable. Whatever is still left is spread by the layout, strip by strip.
+ * A cramped floor keeps its rooms (they are scaled down later).
+ */
+function fill(rs: RoomSpec[], cap: number, level: number, beds = 0): RoomSpec[] {
   const out = [...rs];
-  const extras: (() => RoomSpec | null)[] = level === 0
-    ? [() => (out.some((r) => r.name === 'Family room') ? null : mk('family')), () => (out.some((r) => r.type === 'study') ? null : mk('study')), () => mk('storage')]
-    : [() => (out.some((r) => r.name === 'Retreat') ? null : mk('retreat')), () => (out.some((r) => r.type === 'study') ? null : mk('study', { zone: 2 })), () => mk('storage')];
-  let k = 0;
-  // only for floors far bigger than the brief: spare space is otherwise handled strip by strip
-  // in the layout, where its shape is known
-  while (cap / sum(out) > 2.4 && k < extras.length) {
-    const r = extras[k++]();
-    if (r && cap - sum(out) >= r.target * 1.4) out.push(r);
+  const grow = (limit: (r: RoomSpec) => number) => {
+    for (let i = 0; i < 8; i++) {
+      const s = sum(out);
+      if (s >= cap - 0.5) return;
+      const open = out.filter((r) => r.type !== 'garage' && r.target < limit(r) - 0.05);
+      if (!open.length) return;
+      const f = 1 + (cap - s) / sum(open);
+      for (const r of open) r.target = Math.min(limit(r), r.target * f);
+    }
+  };
+  grow(comfortOf);
+  const has = (p: (r: RoomSpec) => boolean) => out.some(p);
+  const spare = (over: Partial<RoomSpec>, k: keyof typeof R) => mk(k, { ...over, spare: true });
+  // [room, the least spare area (m²) that justifies it]
+  const extras: (() => [RoomSpec, number] | null)[] = level === 0
+    ? [
+      () => (has((r) => r.type === 'laundry') ? null : [spare({}, 'laundry'), 6]),
+      () => (has((r) => r.name === 'Family room') ? null : [spare({}, 'family'), 15]),
+      () => (has((r) => r.type === 'study') ? null : [spare({}, 'study'), 10]),
+      () => (has((r) => r.type === 'dining') || has((r) => /dining/i.test(r.name)) ? null : [spare({}, 'dining'), 14]),
+      () => [spare({}, 'storage'), 6],
+      () => (has((r) => r.name === 'Rumpus room') ? null : [spare({ name: 'Rumpus room', target: 16 }, 'family'), 20]),
+    ]
+    : [
+      () => (has((r) => r.name === 'Retreat') ? null : [spare({}, 'retreat'), 12]),
+      () => (has((r) => r.type === 'study') ? null : [spare({ zone: 2 }, 'study'), 11]),
+      () => [spare({ name: 'Linen store', target: 3 }, 'storage'), 5],
+    ];
+  // rooms stretch a little before another room is added: every extra room needs its own width
+  // along the hallway, a door and a window, so a floor is only given what it can clearly hold
+  grow((r) => comfortOf(r) * (r.compact ? 1.1 : 1.2));
+  void beds;
+  for (const make of extras) {
+    const e = make();
+    if (e && cap - sum(out) >= e[1] * 1.25) out.push(e[0]);
   }
   return out;
 }
